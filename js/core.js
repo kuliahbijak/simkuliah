@@ -93,8 +93,14 @@
   // ------------------------------------------------------------------ pengukur performa
   const Perf = {
     rows: [],
-    add(action, total, server) { this.rows.push({ action, total, server: server == null ? null : server, net: server != null ? total - server : null, at: new Date().toLocaleTimeString() }); if (this.rows.length > 200) this.rows.shift(); },
-    table() { console.table(this.rows.slice(-30)); }
+    add(action, total, server, cached) { this.rows.push({ action, total, server: server == null ? null : server, net: server != null ? total - server : null, cache: cached ? '✓' : '', at: new Date().toLocaleTimeString() }); if (this.rows.length > 300) this.rows.shift(); },
+    table() { console.table(this.rows.slice(-30)); },
+    /** Rata-rata per aksi: Perf.summary() di Console. */
+    summary() {
+      const m = {};
+      this.rows.forEach((r) => { const x = (m[r.action] = m[r.action] || { n: 0, total: 0, server: 0, cache: 0 }); x.n++; x.total += r.total; x.server += r.server || 0; if (r.cache) x.cache++; });
+      console.table(Object.keys(m).map((k) => ({ aksi: k, n: m[k].n, 'rata total ms': Math.round(m[k].total / m[k].n), 'rata server ms': Math.round(m[k].server / m[k].n), 'cache✓': m[k].cache })));
+    }
   };
 
   // ------------------------------------------------------------------ API
@@ -109,17 +115,52 @@
         body: JSON.stringify({ action, token: S.token || '', reqId: reqId || '', data: data || {} })
       });
       const text = await res.text();
-      try { const j = JSON.parse(text); Perf.add(action, Math.round(performance.now() - t0), j.ms); return j; }
+      try { const j = JSON.parse(text); Perf.add(action, Math.round(performance.now() - t0), j.ms, j.cached || (j.data && j.data.partial && !Object.keys(j.data.g || {}).length)); return j; }
       catch (e) { return { success: false, network: true, retryable: res.status >= 500 || res.status === 429 || res.status === 200, message: 'Server membalas HTTP ' + res.status + ' (bukan JSON). Periksa GAS_URL & deployment.' }; }
     } catch (err) {
       return { success: false, network: true, retryable: true, message: err.name === 'AbortError' ? 'Server terlalu lama merespons.' : 'Koneksi terputus. Periksa internet Anda.' };
     } finally { clearTimeout(timer); }
   }
   function waitOnline(ms) { return new Promise((r) => { if (navigator.onLine !== false) return r(); const t = setTimeout(done, ms); function done() { clearTimeout(t); removeEventListener('online', done); r(); } addEventListener('online', done); }); }
+  // ---- v1.1 Turbo: ID sementara (simpan optimistis), dedupe baca, epoch tulis, antrean latar (drain)
+  const APP_VER = '1.1.0';
+  const TMP = {}, REAL = {};
+  function tmpId() { return 'tmp_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
+  /** Ganti ID sementara di payload dengan ID asli (menunggu simpan induknya selesai). */
+  async function resolveTmp(data) {
+    if (!data) return data;
+    let s = JSON.stringify(data);
+    const ids = s.match(/tmp_[a-z0-9]+/g);
+    if (!ids) return data;
+    for (const id of [...new Set(ids)]) {
+      if (!TMP[id]) continue;
+      const real = await TMP[id];
+      if (!real) throw new Error('Data induk gagal disimpan, aksi dibatalkan.');
+      s = s.split(id).join(real);
+    }
+    return JSON.parse(s);
+  }
+  const inflight = {}; let writeEpoch = 0;
   async function api(action, data, opt) {
     opt = opt || {};
     if (!CFG.GAS_URL || /GANTI_DENGAN/.test(CFG.GAS_URL)) return { success: false, message: 'GAS_URL belum diisi di js/config.js.' };
+    try { data = await resolveTmp(data); } catch (e) { return { success: false, message: e.message }; }
     const isRead = READ_ACTIONS.test(action);
+    if (!isRead) { writeEpoch++; return apiRun(action, data, opt, false); }
+    const k = writeEpoch + '|' + action + '|' + JSON.stringify(data || {});          // baca identik → menumpang
+    if (inflight[k]) return inflight[k];
+    const p = apiRun(action, data, opt, true);
+    inflight[k] = p; p.then(() => delete inflight[k], () => delete inflight[k]);
+    return p;
+  }
+  let drainT = null, drainN = 0;
+  function scheduleDrain() { clearTimeout(drainT); drainT = setTimeout(doDrain, 400); }
+  async function doDrain() {
+    drainN++;
+    try { const r = await apiOnce('notif.drain', {}, 60000, ''); if (r && r.success && r.data && r.data.left > 0 && drainN < 4) { scheduleDrain(); return; } } catch (e) {}
+    drainN = 0;
+  }
+  async function apiRun(action, data, opt, isRead) {
     const reqId = isRead ? '' : (opt.reqId || newReqId());
     const tries = isRead ? 3 : 2;
     let res;
@@ -128,11 +169,15 @@
       res = await apiOnce(action, data, isRead ? (i ? 40000 : 25000) : (opt.timeout || 90000), reqId);
       if (res.success || !res.retryable) break;
     }
+    if (res && res.nq > 0) scheduleDrain();                                // notifikasi/job dikerjakan di latar
     if (!res.success && res.code === 'AUTH' && S.token && action !== 'auth.google') onSessionExpired(res.message);
     return res;
   }
   /** Unggah dengan progres (XHR) — tetap text/plain + reqId agar aman di-retry. */
   function apiUpload(action, data, onProgress) {
+    return resolveTmp(data).then((d) => apiUploadRun(action, d, onProgress), (e) => ({ success: false, message: e.message }));
+  }
+  function apiUploadRun(action, data, onProgress) {
     const reqId = newReqId();
     const once = () => new Promise((resolve) => {
       const x = new XMLHttpRequest();
@@ -144,9 +189,19 @@
       x.ontimeout = () => resolve({ success: false, retryable: true, message: 'Unggahan terlalu lama.' });
       x.send(JSON.stringify({ action, token: S.token, reqId, data }));
     });
-    return once().then((r) => (r.success || !r.retryable ? r : once())).then((r) => { if (onProgress) onProgress(100); if (!r.success && r.code === 'AUTH') onSessionExpired(r.message); return r; });
+    return once().then((r) => (r.success || !r.retryable ? r : once())).then((r) => { if (onProgress) onProgress(100); if (r && r.nq > 0) scheduleDrain(); if (!r.success && r.code === 'AUTH') onSessionExpired(r.message); return r; });
   }
-  function warmUp() { try { if (CFG.GAS_URL && !/GANTI_DENGAN/.test(CFG.GAS_URL)) fetch(CFG.GAS_URL + '?ping=' + Date.now(), { mode: 'no-cors', cache: 'no-store' }).catch(() => {}); } catch (e) {} }
+  /** Warmup server (GET ?w=pub|admin, tanpa data) — maks. 1×/4 menit per lingkup. */
+  function warmUp(scope) {
+    scope = scope === 'admin' ? 'admin' : 'pub';
+    try {
+      if (!CFG.GAS_URL || /GANTI_DENGAN/.test(CFG.GAS_URL)) return;
+      const k = 'simk_warm_' + scope, t = Number(sessionStorage.getItem(k) || 0);
+      if (Date.now() - t < 240000) return;
+      sessionStorage.setItem(k, String(Date.now()));
+    } catch (e) {}
+    try { fetch(CFG.GAS_URL + '?w=' + scope + '&t=' + Date.now(), { mode: 'no-cors', cache: 'no-store' }).catch(() => {}); } catch (e) {}
+  }
 
   // ------------------------------------------------------------------ bootstrap + indeks data
   function buildIdx(b) {
@@ -178,23 +233,93 @@
     const c = Store.get(userKey('boot'), null);
     if (!force && c && Date.now() - c.t < 60000) return Promise.resolve(false);
     if (refreshing) return refreshing;
-    refreshing = api('boot').then((res) => {
+    const have = S.boot && S.boot.sv ? S.boot.sv : null;
+    refreshing = api('boot', have ? { sv: have } : {}).then((res) => {
       refreshing = null;
       if (!res.success) { if (!S.boot) showBootError(res.message); return false; }
-      const h = bootHash(res.data), changed = !c || c.h !== h || !S.boot;
-      setBoot(res.data);
+      const d = res.data;
+      if (d.partial && S.boot) {                                   // v1.1: hanya seksi yang berubah dikirim server
+        const meChanged = JSON.stringify(d.me) !== JSON.stringify(S.boot.me);
+        const changed = Object.keys(d.g || {}).length > 0 || 'a' in d || d.u !== undefined || meChanged;
+        Object.assign(S.boot.g, d.g || {});
+        if ('a' in d) S.boot.a = d.a === null ? null : Object.assign(S.boot.a || {}, d.a);
+        if (d.u !== undefined) S.boot.u = d.u;
+        S.boot.me = d.me; S.boot.t = d.t; S.boot.sv = d.sv; S.me = S.boot.me;
+        if (changed) { S.idx = buildIdx(S.boot); const gg = d.g || {}; if (meChanged || 'a' in d || gg.settings || gg.mk || gg.semester) renderShell(); rerender(); }
+        Store.set(userKey('boot'), { t: Date.now(), h: bootHash(S.boot), data: S.boot });
+        return changed;
+      }
+      const h = bootHash(d), changed = !c || c.h !== h || !S.boot;
+      setBoot(d);
       if (changed) { renderShell(); rerender(); }
       return changed;
     });
     return refreshing;
   }
-  const scheduleRefresh = debounce(() => refreshBoot(true), 1200);
+  /** Segarkan latar setelah simpan — ditunda selama masih ada simpanan yang belum selesai. */
+  const scheduleRefresh = debounce(function again() { if (PENDING > 0) { setTimeout(again, 800); return; } refreshBoot(true); }, 2500);
+
+  // ---- v1.1: indikator sinkron & simpan optimistis
+  let PENDING = 0, syncT = null;
+  function pend(delta, gagal) {
+    PENDING = Math.max(0, PENDING + delta);
+    const el = document.getElementById('syncChip'); if (!el) return;
+    clearTimeout(syncT);
+    if (PENDING > 0) { el.hidden = false; el.className = 'sync-chip'; el.innerHTML = '<span class="spin"></span>Menyimpan' + (PENDING > 1 ? ' (' + PENDING + ')' : '') + '…'; }
+    else { el.hidden = false; el.className = 'sync-chip ' + (gagal ? 'err' : 'ok'); el.textContent = gagal ? 'Gagal disimpan' : '✓ Tersimpan'; syncT = setTimeout(() => (el.hidden = true), 1800); }
+  }
+  window.addEventListener('beforeunload', (e) => { if (PENDING > 0) { e.preventDefault(); e.returnValue = ''; } });
+  /**
+   * Simpan optimistis: tampilan berubah & modal tertutup SEKETIKA, server bekerja di latar.
+   * o = { action, data, list: () => array, key, row, modal?, mirror?: () => array, prepend?, fromRes?, onLocal?, onSaved?, reopen?, msg? }
+   * Data baru memakai ID sementara (tmp_…); aksi lanjutan atas data itu otomatis menunggu ID asli.
+   */
+  function saveLocal(o) {
+    const lists = [o.list()].concat(o.mirror ? [o.mirror()] : []), key = o.key;
+    const isNew = !o.row[key], id = isNew ? tmpId() : (REAL[o.row[key]] || o.row[key]);
+    let resolveId = null;
+    if (isNew) TMP[id] = new Promise((r) => (resolveId = (v) => { if (v) REAL[id] = v; r(v); }));
+    const at = (arr, sid) => { let i = arr.findIndex((x) => x[key] === id); if (i < 0 && REAL[id]) i = arr.findIndex((x) => x[key] === REAL[id]); if (i < 0 && sid) i = arr.findIndex((x) => x[key] === sid); return i; };
+    const prev = lists.map((arr) => { const i = at(arr); return i > -1 ? arr[i] : null; });
+    const local = Object.assign({}, prev[0] || {}, o.row, { [key]: id, _pending: true });
+    lists.forEach((arr) => { const i = at(arr); if (i > -1) arr[i] = Object.assign({}, arr[i], local, { [key]: arr[i][key] }); else if (o.prepend) arr.unshift(Object.assign({}, local)); else arr.push(Object.assign({}, local)); });
+    if (o.onLocal) { try { o.onLocal(local); } catch (e) { console.error(e); } }
+    if (o.modal) o.modal.close();                                  // tutup dulu → browser langsung melukis tanpa modal
+    pend(1);
+    const p = api(o.action, o.data);                               // kirim ke server tanpa menunggu render
+    setTimeout(() => { S.idx = buildIdx(S.boot); rerender(); }, 0);
+    return p.then((res) => {
+      if (res.success) {
+        const srow = o.fromRes ? o.fromRes(res.data) : res.data;
+        lists.forEach((arr) => {
+          const i = at(arr, srow && srow[key]);
+          if (srow && typeof srow === 'object' && srow[key]) { if (i > -1) { arr[i] = Object.assign({}, arr[i], srow); delete arr[i]._pending; } else arr.push(Object.assign({}, srow)); }
+          else if (i > -1) delete arr[i]._pending;
+        });
+        if (isNew) resolveId(srow && srow[key] ? srow[key] : null);
+        if (o.onSaved) { try { o.onSaved(srow, res); } catch (e) { console.error(e); } }
+        if (o.msg !== false) toast(o.msg || res.message || 'Tersimpan.', 'success');
+        pend(-1);
+      } else {
+        lists.forEach((arr, li) => { const i = at(arr); if (prev[li]) { if (i > -1) arr[i] = prev[li]; } else if (i > -1) arr.splice(i, 1); });
+        if (isNew) resolveId(null);
+        toast((res.message || 'Gagal menyimpan.') + (o.reopen ? ' Formulir dibuka kembali.' : ''), 'error');
+        pend(-1, true);
+        if (o.reopen) { const draft = Object.assign({}, local, { [key]: isNew ? '' : (REAL[id] || id) }); delete draft._pending; setTimeout(() => o.reopen(draft), 250); }   // isian pengguna tidak hilang
+      }
+      S.idx = buildIdx(S.boot); rerender();
+      scheduleRefresh();
+      return res;
+    });
+  }
 
   /** Mutasi: optimistic → server → rollback bila gagal → segarkan latar. */
   async function mutate(action, data, o) {
     o = o || {};
     if (o.optimistic) { try { o.optimistic(); S.idx = buildIdx(S.boot); rerender(); } catch (e) { console.error(e); } }
+    pend(1);
     const res = await api(action, data);
+    pend(-1, !res.success);
     if (!res.success) {
       if (o.rollback) { try { o.rollback(); S.idx = buildIdx(S.boot); rerender(); } catch (e) {} }
       if (!o.silent) toast(res.message || 'Gagal menyimpan.', 'error');
@@ -253,7 +378,7 @@
   function ensureAdmin() {
     if (window.SIMK_ADMIN_LOADED) return Promise.resolve();
     if (adminLoading) return adminLoading;
-    adminLoading = new Promise((res, rej) => { const s = document.createElement('script'); s.src = 'js/admin.js?v=' + (CFG.CACHE_VERSI || 'v1'); s.onload = () => res(); s.onerror = () => { adminLoading = null; rej(new Error('Gagal memuat modul admin.')); }; document.head.appendChild(s); });
+    adminLoading = new Promise((res, rej) => { const s = document.createElement('script'); s.src = 'js/admin.js?v=' + APP_VER; s.onload = () => res(); s.onerror = () => { adminLoading = null; rej(new Error('Gagal memuat modul admin.')); }; document.head.appendChild(s); });
     return adminLoading;
   }
   async function route() {
@@ -278,11 +403,24 @@
     document.title = (def.title ? (typeof def.title === 'function' ? def.title(param) : def.title) + ' — ' : '') + (S.boot.g.settings.NAMA_APLIKASI || 'SIM KULIAH');
     if (changed) window.scrollTo(0, 0);
   }
-  function rerender() {
+  /** Render ulang halaman aktif dari data lokal. Halaman yang mengelola datanya sendiri (formulir admin) tidak ditimpa. */
+  function rerender(force) {
     if (!S.page || !Pages[S.page]) return;
     const el = $('.page[data-page="' + S.page + '"]', $('#view'));
-    if (el) { try { Pages[S.page].show(el, S.param, false); } catch (e) { console.error(e); } }
+    if (el && (force || !Pages[S.page].selfManaged)) { try { Pages[S.page].show(el, S.param, force ? true : false); } catch (e) { console.error(e); } }
     updateBadges();
+  }
+  /** Prefetch data menu admin dalam SATU eksekusi server (batch) saat browser senggang. */
+  function prefetchAdmin() {
+    if (!D.isAdmin()) return;
+    const calls = [['notifcfg', 'notif.config', {}], ['blasts', 'wa.blastList', {}], ['crm', 'crm.list', { per: 0 }], ['queue', 'notif.queue', {}]];
+    if (D.isOp()) calls.push(['settings', 'settings.get', {}], ['sys', 'system.status', {}], ['audit', 'audit.list', {}]);
+    const need = calls.filter((c) => { const x = Store.get(userKey('a:' + c[0]), null); return !x || Date.now() - x.t > 60000; });
+    if (!need.length) return;
+    api('batch', { calls: need.map((c) => ({ action: c[1], data: c[2] })) }).then((res) => {
+      if (!res.success || !res.data) return;
+      need.forEach((c) => { const r = res.data[c[1]]; if (r && r.success) Store.set(userKey('a:' + c[0]), { t: Date.now(), data: r.data }); });
+    });
   }
 
   // ------------------------------------------------------------------ shell
@@ -336,6 +474,7 @@
       '<button class="icon-btn" data-search-open style="display:none" aria-label="Cari">' + ic('search') + '</button>' +
       (D.isAdmin() ? '<select class="top-sel" id="jenisSel" aria-label="Filter jenis mahasiswa"><option value="">Semua Mahasiswa</option><option value="P2K">Mahasiswa P2K</option><option value="Reguler">Mahasiswa Reguler</option></select>' : '') +
       (smt.nama_semester ? '<span class="smt-pill">' + ic('graduation-cap') + esc(smt.nama_semester) + '</span>' : '') +
+      '<span class="sync-chip" id="syncChip" hidden></span>' +
       '<div style="position:relative"><button class="icon-btn" data-bell aria-label="Notifikasi">' + ic('bell') + '<i class="ping" hidden></i></button></div>' +
       '<div style="position:relative"><button class="me-btn" data-me>' + avatar(me.nama_lengkap, '', S.foto) + '<span class="t"><span class="nm">' + esc(me.nama_lengkap) + '</span><br><span class="rl">' + esc(ROLE_LABEL[me.role]) + '</span></span></button></div>';
     if ($('#jenisSel')) $('#jenisSel').value = S.jenis;
@@ -722,7 +861,7 @@
     renderShell();
     if (!location.hash || location.hash === '#' || location.hash === '#/') location.replace('#/dashboard'); else route();
     setTimeout(showAnnouncementPopups, 600);
-    if (D.isAdmin()) idle(() => ensureAdmin().catch(() => {}), 2500);
+    if (D.isAdmin()) idle(() => ensureAdmin().then(() => idle(prefetchAdmin, 1500)).catch(() => {}), 2000);
   }
 
   // ------------------------------------------------------------------ event global (delegasi)
@@ -755,13 +894,13 @@
   let hiddenAt = 0;
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) { hiddenAt = Date.now(); return; }
-    if (hiddenAt && Date.now() - hiddenAt > 120000) { warmUp(); if (S.token) refreshBoot(false); }
+    if (hiddenAt && Date.now() - hiddenAt > 120000) { if (S.token) { refreshBoot(false); if (D.isAdmin()) idle(prefetchAdmin, 3000); } else warmUp('pub'); }
   });
   window.addEventListener('online', () => { if (S.token) refreshBoot(true); });
 
   // ------------------------------------------------------------------ start
   function start() {
-    warmUp();
+    if (!S.token) warmUp('pub');                       // tamu: panaskan server selagi halaman login dibuka
     const cached = S.token && S.email ? Store.get(userKey('boot'), null) : null;
     if (S.token && cached) {
       setBoot(cached.data, true);
@@ -781,7 +920,8 @@
     registerPage, go, route, rerender, renderShell, modal, confirmDlg, toast, busy, formData, radioCards, openDropdown,
     readFile, downloadFile, openViewer, saveBlob, b64ToBlob, donut, bars, progress, table, exportXlsx, exportPdf, parseSheetFile, normKey, loadScript,
     fmtTgl, fmtWaktu, fmtRel, fmtSize, initials, avatar, chipJenis, statusChip, pct, ymd, todayYmd, addDays, dayDiff, hp08, hpValid, emailValid, fileKind,
-    ROLE_LABEL, HARI, BULAN, markRead, ensureAdmin, logout, userKey, annForMe, onGoogleCredential
+    ROLE_LABEL, HARI, BULAN, markRead, ensureAdmin, logout, userKey, annForMe, onGoogleCredential,
+    APP_VER, saveLocal, tmpId, pend, warmUp, prefetchAdmin, scheduleDrain
   };
   window.Perf = Perf;
   document.addEventListener('DOMContentLoaded', () => setTimeout(start, 0));

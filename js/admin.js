@@ -81,8 +81,7 @@
         $$('[data-ok]', tb).forEach((b) => (b.onclick = async () => {
           const id = b.dataset.ok, u = S.boot.a.users.find((x) => x.user_id === id), prev = u.status_akun;
           const data = { user_id: id, setuju: true, jenis_mahasiswa: $('[data-j="' + id + '"]', tb).value, role: $('[data-r="' + id + '"]', tb).value };
-          busy(b, true, '');
-          await mutate('reg.verify', data, { optimistic: () => Object.assign(u, { status_akun: 'Aktif', role: data.role, jenis_mahasiswa: data.jenis_mahasiswa }), rollback: () => (u.status_akun = prev) });
+          mutate('reg.verify', data, { optimistic: () => Object.assign(u, { status_akun: 'Aktif', role: data.role, jenis_mahasiswa: data.jenis_mahasiswa }), rollback: () => (u.status_akun = prev) });
         }));
         $$('[data-no]', tb).forEach((b) => (b.onclick = () => {
           const id = b.dataset.no, u = S.boot.a.users.find((x) => x.user_id === id);
@@ -133,7 +132,7 @@
     });
   }
   function mhsForm(m) {
-    const isNew = !m; m = m || {};
+    const isNew = !m || !m.mhs_id; m = m || {};
     const md = modal({
       title: isNew ? 'Tambah Mahasiswa' : 'Perbarui Profil Mahasiswa', sub: isNew ? 'Data mahasiswa + akun login Google (opsional)' : esc(m.nama_lengkap + ' · ' + (m.nim || '')), icon: 'user-plus', size: 'lg',
       body: '<div class="sec-t" style="margin-top:0">● Informasi Identitas &amp; Kontak</div><div class="form-grid">' +
@@ -151,15 +150,16 @@
       foot: '<button class="btn ghost" data-close>Batal</button><button class="btn" data-save>' + ic('check') + (isNew ? 'Simpan Mahasiswa' : 'Simpan Perubahan') + '</button>'
     });
     radioCards(md.el);
-    $('[data-save]', md.el).onclick = async (e) => {
+    $('[data-save]', md.el).onclick = () => {
       const fd = formData(md.el);
       if (!fd.nama_lengkap.trim()) return toast('Nama wajib diisi.', 'error');
       if (!emailValid(fd.email)) return toast('Email tidak valid.', 'error');
       if (fd.no_hp && !hpValid(fd.no_hp)) return toast('Nomor WA tidak valid.', 'error');
       const row = { mhs_id: m.mhs_id || '', nama_lengkap: fd.nama_lengkap, nim: fd.nim, email: fd.email.trim().toLowerCase(), no_hp: fd.no_hp ? hp08(fd.no_hp) : '', jenis_mahasiswa: fd.jenis_mahasiswa, angkatan: fd.angkatan, target_lulus_semester: fd.target_lulus_semester, konsentrasi: fd.konsentrasi, instansi: fd.instansi, status: fd.status };
-      busy(e.target.closest('button,.btn'), true, 'Menyimpan…');
-      const r = await mutate('master.save', { sheet: 'Mahasiswa', row, buatAkun: !!fd.buatAkun }, { apply: (d) => K.upsertLocal(S.boot.a.mahasiswa, 'mhs_id', d) });
-      busy(e.target.closest('button,.btn'), false); if (r.success) md.close();
+      const dup = S.boot.a.mahasiswa.find((x) => x.mhs_id !== row.mhs_id && ((row.email && String(x.email).toLowerCase() === row.email) || (row.nim && x.nim && String(x.nim) === String(row.nim))));
+      if (dup) return toast('Email/NIM sudah dipakai oleh ' + dup.nama_lengkap + '.', 'error');
+      K.saveLocal({ action: 'master.save', data: { sheet: 'Mahasiswa', row, buatAkun: !!fd.buatAkun }, list: () => S.boot.a.mahasiswa, key: 'mhs_id', modal: md, reopen: (d) => mhsForm(d),
+        row: Object.assign({}, m, row, { status: row.status || 'Aktif' }) });
     };
   }
 
@@ -275,7 +275,7 @@
     $('[data-add]', body).onclick = () => mkForm();
   }
   function mkForm(m) {
-    const isNew = !m; m = m || {};
+    const isNew = !m || !m.mk_id; m = m || {};
     const md = modal({ title: isNew ? 'Tambah Mata Kuliah' : 'Ubah Mata Kuliah', icon: 'book-open', size: 'lg',
       body: '<div class="form-grid"><div class="field"><label>Kode <span class="req">*</span></label><input class="inp" name="kode" value="' + esc(m.kode || '') + '" placeholder="MET-804"></div><div class="field"><label>SKS</label><input class="inp" type="number" min="1" max="6" name="sks" value="' + esc(m.sks || 3) + '"></div>' +
         '<div class="field full"><label>Nama Mata Kuliah <span class="req">*</span></label><input class="inp" name="nama" value="' + esc(m.nama || '') + '"></div>' +
@@ -290,6 +290,7 @@
       if (!fd.kode.trim() || !fd.nama.trim()) return toast('Kode & nama wajib diisi.', 'error');
       const row = { mk_id: m.mk_id || '', kode: fd.kode.trim().toUpperCase(), nama: fd.nama, sks: fd.sks, semester_id: fd.semester_id, dosen_id: fd.dosen_id, deskripsi: fd.deskripsi };
       if (!isNew) row.status_aktif = fd.status_aktif;
+      if (!isNew) return K.saveLocal({ action: 'master.save', data: { sheet: 'MataKuliah', row }, list: () => S.boot.g.mk, key: 'mk_id', modal: md, reopen: (d) => mkForm(d), row: Object.assign({}, m, row) });
       busy(e.target.closest('button,.btn'), true, 'Menyimpan…');
       const r = await mutate('master.save', { sheet: 'MataKuliah', row, jadwal: isNew && fd.hari ? { hari: fd.hari, jam_mulai: fd.jam_mulai, jam_selesai: fd.jam_selesai, ruang: fd.ruang, jenis_kelas: fd.jenis_kelas } : null }, { apply: (d) => K.upsertLocal(S.boot.g.mk, 'mk_id', d) });
       busy(e.target.closest('button,.btn'), false); if (r.success) { md.close(); if (isNew) K.refreshBoot(true); }
@@ -315,10 +316,12 @@
     const md = modal({ title: s.semester_id ? 'Ubah Semester' : 'Tambah Semester', icon: 'calendar-days',
       body: '<div class="form-grid"><div class="field full"><label>Nama Semester <span class="req">*</span></label><input class="inp" name="nama_semester" value="' + esc(s.nama_semester || '') + '" placeholder="Semester Genap 2026/2027"></div><div class="field"><label>Tanggal Mulai</label><input class="inp" type="date" name="tanggal_mulai" value="' + esc(ymd(s.tanggal_mulai)) + '"></div><div class="field"><label>Tanggal Selesai</label><input class="inp" type="date" name="tanggal_selesai" value="' + esc(ymd(s.tanggal_selesai)) + '"></div><label class="check"><input type="checkbox" name="aktif" ' + (s.status_aktif === 'YA' ? 'checked' : '') + '>Jadikan semester aktif</label></div>',
       foot: '<button class="btn ghost" data-close>Batal</button><button class="btn" data-save>Simpan</button>' });
-    $('[data-save]', md.el).onclick = async (e) => {
-      const fd = formData(md.el); busy(e.target.closest('button,.btn'), true);
-      const r = await mutate('master.save', { sheet: 'Semester', row: { semester_id: s.semester_id || '', nama_semester: fd.nama_semester, tanggal_mulai: fd.tanggal_mulai, tanggal_selesai: fd.tanggal_selesai, status_aktif: fd.aktif ? 'YA' : (s.status_aktif || 'TIDAK') } }, { apply: (d) => K.upsertLocal(S.boot.g.semester, 'semester_id', d) });
-      busy(e.target.closest('button,.btn'), false); if (r.success) md.close();
+    $('[data-save]', md.el).onclick = () => {
+      const fd = formData(md.el);
+      if (!fd.nama_semester.trim() || !fd.tanggal_mulai || !fd.tanggal_selesai) return toast('Nama, tanggal mulai & selesai wajib diisi.', 'error');
+      const row = { semester_id: s.semester_id || '', nama_semester: fd.nama_semester.trim(), tanggal_mulai: fd.tanggal_mulai, tanggal_selesai: fd.tanggal_selesai, status_aktif: fd.aktif ? 'YA' : (s.status_aktif || 'TIDAK') };
+      K.saveLocal({ action: 'master.save', data: { sheet: 'Semester', row }, list: () => S.boot.g.semester, key: 'semester_id', modal: md, reopen: (d) => smtForm(d), row: Object.assign({}, s, row),
+        onSaved: (d) => { if (d && d.status_aktif === 'YA') { S.boot.g.semester.forEach((x) => { if (x.semester_id !== d.semester_id) x.status_aktif = 'TIDAK'; }); S.boot.g.settings.SEMESTER_AKTIF = d.semester_id; K.renderShell(); } } });
     };
   }
   function tabDosen(body) {
@@ -335,11 +338,11 @@
     const md = modal({ title: d.dosen_id ? 'Ubah Dosen' : 'Tambah Dosen', icon: 'user-cog',
       body: '<div class="form-grid"><div class="field full"><label>Nama &amp; Gelar <span class="req">*</span></label><input class="inp" name="nama" value="' + esc(d.nama || '') + '"></div><div class="field"><label>Email</label><input class="inp" name="email" value="' + esc(d.email || '') + '"></div><div class="field"><label>No HP</label><input class="inp" name="no_hp" value="' + esc(d.no_hp || '') + '"></div><div class="field full"><label>Bidang / Keahlian</label><input class="inp" name="bidang" value="' + esc(d.bidang || '') + '"></div><div class="field"><label>Status</label><select class="inp" name="status"><option ' + (d.status !== 'Nonaktif' ? 'selected' : '') + '>Aktif</option><option ' + (d.status === 'Nonaktif' ? 'selected' : '') + '>Nonaktif</option></select></div></div>',
       foot: '<button class="btn ghost" data-close>Batal</button><button class="btn" data-save>Simpan</button>' });
-    $('[data-save]', md.el).onclick = async (e) => {
+    $('[data-save]', md.el).onclick = () => {
       const fd = formData(md.el); if (!fd.nama.trim()) return toast('Nama wajib diisi.', 'error');
-      busy(e.target.closest('button,.btn'), true);
-      const r = await mutate('master.save', { sheet: 'Dosen', row: Object.assign({ dosen_id: d.dosen_id || '' }, fd, { no_hp: fd.no_hp ? hp08(fd.no_hp) : '' }) }, { apply: (x) => { K.upsertLocal(S.boot.a.dosen, 'dosen_id', x); K.upsertLocal(S.boot.g.dosen, 'dosen_id', x); } });
-      busy(e.target.closest('button,.btn'), false); if (r.success) md.close();
+      if (fd.no_hp && !hpValid(fd.no_hp)) return toast('Nomor HP tidak valid.', 'error');
+      const row = Object.assign({ dosen_id: d.dosen_id || '' }, fd, { no_hp: fd.no_hp ? hp08(fd.no_hp) : '' });
+      K.saveLocal({ action: 'master.save', data: { sheet: 'Dosen', row }, list: () => S.boot.a.dosen, mirror: () => S.boot.g.dosen, key: 'dosen_id', modal: md, reopen: (x) => dosenForm(x), row: Object.assign({}, d, row) });
     };
   }
   function tabJadwal(body) {
@@ -355,11 +358,10 @@
     const md = modal({ title: j.jadwal_id ? 'Ubah Jadwal' : 'Tambah Jadwal', icon: 'clock',
       body: '<div class="form-grid"><div class="field full"><label>Mata Kuliah <span class="req">*</span></label><select class="inp" name="mk_id">' + D.mkAktif().map((m) => '<option value="' + m.mk_id + '" ' + (m.mk_id === j.mk_id ? 'selected' : '') + '>' + esc(m.kode + ' — ' + m.nama) + '</option>').join('') + '</select></div><div class="field"><label>Hari <span class="req">*</span></label><select class="inp" name="hari">' + K.HARI.map((h) => '<option ' + (h === j.hari ? 'selected' : '') + '>' + h + '</option>').join('') + '</select></div><div class="field"><label>Kelas</label><select class="inp" name="jenis_kelas">' + ['Semua', 'P2K', 'Reguler'].map((x) => '<option ' + (x === (j.jenis_kelas || 'Semua') ? 'selected' : '') + '>' + x + '</option>').join('') + '</select></div><div class="field"><label>Jam Mulai <span class="req">*</span></label><input class="inp" type="time" name="jam_mulai" value="' + esc(j.jam_mulai || '') + '"></div><div class="field"><label>Jam Selesai</label><input class="inp" type="time" name="jam_selesai" value="' + esc(j.jam_selesai || '') + '"></div><div class="field full"><label>Ruang / Link</label><input class="inp" name="ruang" value="' + esc(j.ruang || '') + '"></div></div>',
       foot: '<button class="btn ghost" data-close>Batal</button><button class="btn" data-save>Simpan</button>' });
-    $('[data-save]', md.el).onclick = async (e) => {
+    $('[data-save]', md.el).onclick = () => {
       const fd = formData(md.el); if (!fd.jam_mulai) return toast('Jam mulai wajib diisi.', 'error');
-      busy(e.target.closest('button,.btn'), true);
-      const r = await mutate('master.save', { sheet: 'Jadwal', row: Object.assign({ jadwal_id: j.jadwal_id || '' }, fd) }, { apply: (x) => K.upsertLocal(S.boot.g.jadwal, 'jadwal_id', x) });
-      busy(e.target.closest('button,.btn'), false); if (r.success) md.close();
+      const row = Object.assign({ jadwal_id: j.jadwal_id || '' }, fd);
+      K.saveLocal({ action: 'master.save', data: { sheet: 'Jadwal', row }, list: () => S.boot.g.jadwal, key: 'jadwal_id', modal: md, reopen: (x) => jadwalForm(x), row: Object.assign({}, j, row) });
     };
   }
   K.registerPage('master', { auth: 'admin', title: 'Master Data', show: renderMaster });
@@ -458,13 +460,13 @@
     });
   }
   K.registerPage('settings', {
-    auth: 'op', title: 'Pengaturan',
+    auth: 'op', title: 'Pengaturan', selfManaged: true,
     show(el, param) {
       const st = el._st || (el._st = { tab: param || 'umum' });
       if (param && ['umum', 'sistem', 'migrasi', 'audit'].indexOf(param) > -1) st.tab = param;
       el.innerHTML = '<div class="page-h"><div><h1>Pengaturan</h1><div class="sub">Identitas aplikasi, logo, semester aktif, sistem & trigger, migrasi data, dan log audit. Hanya Operator.</div></div></div>' +
         tabsHtml([['umum', 'Umum & Logo', 'settings'], ['sistem', 'Sistem & Trigger', 'server'], ['migrasi', 'Migrasi Data', 'database'], ['audit', 'Log Audit', 'history']], st.tab) + '<div id="setBody"></div>';
-      $$('[data-tab]', el).forEach((b) => (b.onclick = () => { st.tab = b.dataset.tab; history.replaceState(null, '', '#/settings/' + st.tab); S.param = st.tab; this.show(el, st.tab); }));
+      $$('[data-tab]', el).forEach((b) => (b.onclick = () => { st.tab = b.dataset.tab; history.replaceState(null, '', '#/settings/' + st.tab); S.param = st.tab; this.show(el, st.tab, true); }));
       const body = $('#setBody', el);
       ({ umum: setUmum, sistem: setSistem, migrasi: setMigrasi, audit: setAudit })[st.tab](body);
     }
@@ -529,7 +531,7 @@
         const r = await api('system.run', { job: b.dataset.job }, { timeout: 300000 });
         busy(b, false);
         toast(r.success ? 'Selesai: ' + JSON.stringify(r.data).slice(0, 140) : r.message, r.success ? 'success' : 'error');
-        if (r.success) { Store.del(userKey('a:sys')); setSistem(body); if (b.dataset.job === 'cache') K.refreshBoot(true); }
+        if (r.success) { const s2 = await api('system.status', { _fresh: true }); if (s2.success) Store.set(userKey('a:sys'), { t: Date.now(), data: s2.data }); setSistem(body); if (b.dataset.job === 'cache') K.refreshBoot(true); }
       }));
       $$('[data-copy]', body).forEach((b) => (b.onclick = () => { navigator.clipboard.writeText(b.dataset.copy).then(() => toast('Disalin ke clipboard.')); }));
     };
@@ -584,7 +586,7 @@
   const NS = { aud: null, sel: new Set(), blast: null, auto: false, timer: null, batch: null, jeda: null, kanal: 'WA', hanyaWA: false };
   K.blastPrefill = function (rows) { NS.aud = { rows: rows.map((r) => Object.assign({ valid: hpValid(r.hp) || emailValid(r.email), ganda: false }, r)), ringkas: null }; NS.sel = new Set(rows.map((r) => r.id)); K.go('notif', 'blast'); };
   K.registerPage('notif', {
-    auth: 'admin', title: 'Notifikasi & WA',
+    auth: 'admin', title: 'Notifikasi & WA', selfManaged: true,
     show(el, param) {
       const st = el._st || (el._st = { tab: param || 'blast' });
       if (param && ['blast', 'antrean', 'config'].indexOf(param) > -1) st.tab = param;
@@ -592,7 +594,7 @@
       const set = S.boot.g.settings;
       el.innerHTML = '<div class="page-h"><div><h1>WhatsApp &amp; Notifikasi</h1><div class="sub">Blast per gelombang via Fonnte, notifikasi email, antrean pengiriman, dan matriks notifikasi otomatis.</div></div><div class="row gap6"><span class="chip ' + (set.NOTIF_WA_AKTIF === 'YA' ? 'green' : 'red') + ' dot">WhatsApp ' + (set.NOTIF_WA_AKTIF === 'YA' ? 'aktif' : 'nonaktif') + '</span><span class="chip ' + (set.NOTIF_EMAIL_AKTIF === 'YA' ? 'green' : 'red') + ' dot">Email ' + (set.NOTIF_EMAIL_AKTIF === 'YA' ? 'aktif' : 'nonaktif') + '</span></div></div>' +
         tabsHtml([['blast', 'Blast WhatsApp / Email', 'megaphone'], ['antrean', 'Antrean & Riwayat', 'history']].concat(D.isOp() ? [['config', 'Konfigurasi', 'sliders-horizontal']] : []), st.tab) + '<div id="nBody"></div>';
-      $$('[data-tab]', el).forEach((b) => (b.onclick = () => { st.tab = b.dataset.tab; history.replaceState(null, '', '#/notif/' + st.tab); S.param = st.tab; this.show(el, st.tab); }));
+      $$('[data-tab]', el).forEach((b) => (b.onclick = () => { st.tab = b.dataset.tab; history.replaceState(null, '', '#/notif/' + st.tab); S.param = st.tab; this.show(el, st.tab, true); }));
       const body = $('#nBody', el);
       ({ blast: tabBlast, antrean: tabAntrean, config: tabConfig })[st.tab](body);
     }
@@ -769,9 +771,12 @@
     load(false);
   }
   function tabConfig(body) {
-    body.innerHTML = '<div class="card"><div class="skel" style="height:260px"></div></div>';
+    body._dirty = false; body._shown = false;
+    if (!Store.get(userKey('a:notifcfg'), null)) body.innerHTML = '<div class="card"><div class="skel" style="height:260px"></div></div>';
     loadSwr('notifcfg', 'notif.config', {}, (c, fromCache, err) => {
-      if (!c) { body.innerHTML = '<div class="card alert err">' + esc(err || 'Gagal memuat.') + '</div>'; return; }
+      if (!c) { if (!body._shown) body.innerHTML = '<div class="card alert err">' + esc(err || 'Gagal memuat.') + '</div>'; return; }
+      if (body._shown && body._dirty) return;                      // jangan timpa suntingan yang belum disimpan
+      body._shown = true;
       const mat = JSON.parse(JSON.stringify(c.matriks));
       body.innerHTML = '<div class="grid g2"><div class="card"><div class="card-h"><div><h3 class="row gap6">' + ic('message-circle') + 'WhatsApp (Fonnte)</h3><div class="sub">Token disimpan di Script Properties — tidak pernah dikirim ke browser.</div></div></div>' +
         '<label class="switch" style="font-size:15px"><input type="checkbox" id="cWa" ' + (c.waAktif ? 'checked' : '') + '><span class="tr"></span>Notifikasi WhatsApp ' + (c.waAktif ? 'AKTIF' : 'NONAKTIF') + '</label>' +
@@ -797,6 +802,9 @@
         $$('[data-reset]', body).forEach((x) => (x.onclick = () => { const m = mat[x.dataset.reset]; m.subjek = m.subjekDefault; m.pesan = m.pesanDefault; drawMx(); $('[data-row="' + x.dataset.reset + '"]', body).hidden = false; }));
       };
       drawMx();
+      const tandai = () => (body._dirty = true);
+      body.oninput = tandai; body.onchange = tandai;
+      [['#cWa', 'Notifikasi WhatsApp '], ['#cEm', 'Notifikasi Email ']].forEach((x) => { const cb = $(x[0], body); cb.addEventListener('change', () => { cb.parentElement.lastChild.textContent = x[1] + (cb.checked ? 'AKTIF' : 'NONAKTIF'); }); });
       const dt = $('[data-deltok]', body); if (dt) dt.onclick = (e) => { e.preventDefault(); $('#cTok', body).value = '__HAPUS__'; toast('Token akan dihapus saat disimpan.', 'warn'); };
       $('[data-dev]', body).onclick = async (e) => { busy(e.target.closest('button,.btn'), true, 'Mengecek…'); const r = await api('wa.device', {}); busy(e.target.closest('button,.btn'), false); $('#devInfo', body).innerHTML = r.success ? '<div class="alert ' + (r.data.status === 'connect' ? 'ok' : 'warn') + '">' + ic('smartphone') + '<span>' + esc(r.data.device || '') + ' · <b>' + esc(r.data.status || '') + '</b> · paket ' + esc(r.data.paket || '-') + ' · kuota ' + esc(r.data.kuota || '-') + ' · s.d. ' + esc(r.data.kedaluwarsa || '-') + '</span></div>' : '<div class="alert err">' + esc(r.message) + '</div>'; };
       $('[data-twa]', body).onclick = async (e) => { busy(e.target.closest('button,.btn'), true, ''); const r = await api('wa.test', { nomor: $('#cTestWa', body).value }); busy(e.target.closest('button,.btn'), false); toast(r.message, r.success ? 'success' : 'error'); };
@@ -808,7 +816,7 @@
         if (!r.success) return toast(r.message, 'error');
         Store.set(userKey('a:notifcfg'), { t: Date.now(), data: r.data });
         S.boot.g.settings.NOTIF_WA_AKTIF = r.data.waAktif ? 'YA' : 'TIDAK'; S.boot.g.settings.NOTIF_EMAIL_AKTIF = r.data.emailAktif ? 'YA' : 'TIDAK';
-        toast('Konfigurasi notifikasi disimpan.'); K.scheduleRefresh(); tabConfig(body);
+        toast('Konfigurasi notifikasi disimpan.'); K.scheduleRefresh(); body._dirty = false; K.rerender(true);
       };
     }, 20000);
   }
@@ -816,7 +824,7 @@
   // ============================================================== CRM KONTAK
   const CS = { f: { cari: '', segmen: '', statusWA: '', optOut: false, duplikat: false, emailValid: '', tag: '' }, sel: new Set(), data: null };
   K.registerPage('crm', {
-    auth: 'admin', title: 'CRM Kontak',
+    auth: 'admin', title: 'CRM Kontak', selfManaged: true,
     show(el) {
       el.innerHTML = '<div class="page-h"><div><h1>CRM Kontak</h1><div class="sub">Satu layar untuk memantau Nama · Email · WhatsApp seluruh mahasiswa, pendaftar, pengurus, dosen, dan kontak luar — lalu langsung dipakai untuk blast.</div></div>' +
         '<div class="row wrap"><span class="small muted" id="syncInfo"></span><button class="btn ghost" data-sync>' + ic('refresh-cw') + 'Sinkron Sekarang</button><button class="btn ghost" data-imp>' + ic('upload') + 'Import CSV</button><button class="btn ghost" data-dup>' + ic('merge') + 'Periksa Duplikat</button>' + (D.isOp() ? '<button class="btn ghost" data-exp>' + ic('download') + 'Ekspor</button>' : '') + '</div></div>' +

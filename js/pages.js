@@ -407,15 +407,15 @@
     $$('#tipeSeg button', m.el).forEach((b) => (b.onclick = () => { tipe = b.dataset.v; $$('#tipeSeg button', m.el).forEach((x) => x.classList.toggle('on', x === b)); if (tipe === 'Mandiri' && pilih.size > 1) { const f = [...pilih][0]; pilih.clear(); pilih.add(f); draw(); } $('#selCount', m.el).textContent = pilih.size + ' dipilih'; }));
     const selEl = $('[name=pertemuan_id]', m.el);
     selEl.onchange = () => { const p = S.idx.ptm[selEl.value]; if (p && ymd(p.tanggal)) { $('[name=tanggal_presentasi]', m.el).value = ymd(p.tanggal); $('[name=deadline_makalah]', m.el).value = addDays(ymd(p.tanggal), -2); } };
-    $('[data-save]', m.el).onclick = async (e) => {
+    $('[data-save]', m.el).onclick = () => {
       const fd = formData(m.el);
       const data = { tugas_id: t ? t.tugas_id : '', pertemuan_id: t ? t.pertemuan_id : fd.pertemuan_id, tema: fd.tema.trim(), tipe, petugas_ids: [...pilih], deadline_makalah: fd.deadline_makalah, tanggal_presentasi: fd.tanggal_presentasi };
       if (!data.tema) return toast('Tema wajib diisi.', 'error');
       if (!data.petugas_ids.length) return toast('Pilih minimal satu petugas.', 'error');
-      busy(e.target.closest('button,.btn'), true, 'Menyimpan…');
-      const r = await mutate('penugasan.save', data, { apply: (d) => upsertLocal(S.boot.g.penugasan, 'tugas_id', d) });
-      busy(e.target.closest('button,.btn'), false);
-      if (r.success) m.close();
+      if (tipe === 'Mandiri' && data.petugas_ids.length > 1) return toast('Tugas Mandiri hanya untuk satu petugas.', 'error');
+      const lama = t ? S.idx.tugas[t.tugas_id] : null;
+      K.saveLocal({ action: 'penugasan.save', data, list: () => S.boot.g.penugasan, key: 'tugas_id', modal: m, reopen: (d) => penugasanForm(Object.assign({}, o, { tugas: d })),
+        row: { tugas_id: data.tugas_id, pertemuan_id: data.pertemuan_id, tema: data.tema, tipe, petugas_ids: data.petugas_ids, deadline_makalah: data.deadline_makalah, tanggal_presentasi: data.tanggal_presentasi, status: (lama && lama.status) || 'Ditugaskan', dibuat_oleh: (lama && lama.dibuat_oleh) || S.me.user_id } });
     };
   }
   async function hapusTugas(t) {
@@ -432,11 +432,10 @@
         '<div class="alert info mt16">' + ic('info') + '<span>Isi semua tanggal otomatis dari hari kuliah & tanggal mulai semester?</span><button class="btn xs soft" data-auto>Isi otomatis</button></div>',
       foot: '<button class="btn ghost" data-close>Batal</button><button class="btn" data-save>Simpan</button>'
     });
-    $('[data-save]', m.el).onclick = async (e) => {
+    $('[data-save]', m.el).onclick = () => {
       const fd = formData(m.el), prev = Object.assign({}, p);
-      busy(e.target.closest('button,.btn'), true);
-      const r = await mutate('pertemuan.save', Object.assign({ pertemuan_id: p.pertemuan_id }, fd), { optimistic: () => Object.assign(p, fd), rollback: () => Object.assign(p, prev) });
-      busy(e.target.closest('button,.btn'), false); if (r.success) m.close();
+      m.close();
+      mutate('pertemuan.save', Object.assign({ pertemuan_id: p.pertemuan_id }, fd), { optimistic: () => Object.assign(p, fd), rollback: () => Object.assign(p, prev) });
     };
     $('[data-auto]', m.el).onclick = async (e) => {
       const timpa = await confirmDlg('Timpa tanggal yang sudah ada?', 'Pilih "Ya" untuk menghitung ulang ke-16 tanggal, atau "Batal" untuk hanya mengisi yang kosong.', { ok: 'Ya, timpa semua' });
@@ -511,8 +510,13 @@
     $('[data-save]', m.el).onclick = async (e) => {
       const fd = formData(m.el);
       if (!fd.isi.trim() && !file && !(n && n.drive_file_id)) return toast('Isi notulen atau lampirkan berkas.', 'error');
-      const btn = e.target.closest('button,.btn'); busy(btn, true, 'Menyimpan…');
       const data = Object.assign({ notulen_id: n ? n.notulen_id : '', pertemuan_id: n ? n.pertemuan_id : fd.pertemuan_id, judul: fd.judul, isi: fd.isi }, file || {});
+      if (!file) {                                       // teks saja → simpan optimistis
+        const ptmN = (S.idx.ptm[data.pertemuan_id] || {}).nomor;
+        return K.saveLocal({ action: 'notulen.save', data, list: () => S.boot.g.notulen, key: 'notulen_id', modal: m, reopen: () => notulenForm(o),
+          row: Object.assign({ pengunggah_id: S.me.user_id, tanggal: new Date().toISOString(), drive_file_id: '', nama_file: '', mime: '', ukuran: '' }, n || {}, { notulen_id: data.notulen_id, pertemuan_id: data.pertemuan_id, judul: (fd.judul || '').trim() || ('Notulen Pertemuan ' + ptmN), isi: fd.isi }) });
+      }
+      const btn = e.target.closest('button,.btn'); busy(btn, true, 'Menyimpan…');
       const r = file ? await K.apiUpload('notulen.save', data, (pp) => setProg(m.el, pp)) : await api('notulen.save', data);
       busy(btn, false);
       if (!r.success) return toast(r.message, 'error');
@@ -539,8 +543,14 @@
       if (tipe === 'YouTube' && !/youtu/.test(fd.url)) return toast('Masukkan tautan YouTube yang valid.', 'error');
       if (tipe !== 'YouTube' && !file) return toast('Pilih berkas referensi.', 'error');
       if (tipe === 'E-book' && file && !/\.(pdf|epub)$/i.test(file.nama_file)) return toast('E-book harus PDF/EPUB.', 'error');
-      const btn = e.target.closest('button,.btn'); busy(btn, true, 'Menyimpan…');
       const data = Object.assign({ mk_id: mkId, judul: fd.judul, tipe, pertemuan_id: fd.pertemuan_id, url: fd.url }, tipe !== 'YouTube' ? file : {});
+      if (tipe === 'YouTube') {                          // tautan video → simpan optimistis
+        const vid = (String(fd.url).match(/(?:youtu\.be\/|v=|embed\/|shorts\/|live\/)([A-Za-z0-9_-]{11})/) || [])[1];
+        if (!vid) return toast('Tautan YouTube tidak valid.', 'error');
+        return K.saveLocal({ action: 'referensi.save', data, list: () => S.boot.g.referensi, key: 'ref_id', modal: m, reopen: () => referensiForm(o),
+          row: { ref_id: '', mk_id: mkId, pertemuan_id: fd.pertemuan_id, pengunggah_id: S.me.user_id, judul: fd.judul.trim(), tipe: 'YouTube', url_embed: 'https://www.youtube-nocookie.com/embed/' + vid, drive_file_id: '', nama_file: '', mime: 'video/youtube', ukuran: '', tanggal: new Date().toISOString() } });
+      }
+      const btn = e.target.closest('button,.btn'); busy(btn, true, 'Menyimpan…');
       const r = tipe !== 'YouTube' ? await K.apiUpload('referensi.save', data, (pp) => setProg(m.el, pp)) : await api('referensi.save', data);
       busy(btn, false);
       if (!r.success) return toast(r.message, 'error');
@@ -585,13 +595,14 @@
       foot: '<button class="btn ghost" data-close>Batal</button><button class="btn" data-save>' + ic('send') + (p ? 'Simpan' : 'Terbitkan') + '</button>'
     });
     $('[name=target]', m.el).onchange = (e) => ($('#annMk', m.el).hidden = e.target.value !== 'Matakuliah');
-    $('[data-save]', m.el).onclick = async (e) => {
+    $('[data-save]', m.el).onclick = () => {
       const fd = formData(m.el);
       if (!fd.judul.trim() || !fd.isi.trim()) return toast('Judul dan isi wajib diisi.', 'error');
       if (!fd.kanal.length) return toast('Pilih minimal satu kanal.', 'error');
-      busy(e.target.closest('button,.btn'), true, 'Menerbitkan…');
-      const r = await mutate('pengumuman.save', Object.assign({ pengumuman_id: p ? p.pengumuman_id : '' }, fd), { apply: (d) => { upsertLocal(S.boot.g.pengumuman, 'pengumuman_id', d); S.boot.g.pengumuman.sort((a, b) => String(b.tanggal).localeCompare(String(a.tanggal))); if (!S.boot.u.dibaca.includes(d.pengumuman_id)) S.boot.u.dibaca.push(d.pengumuman_id); } });
-      busy(e.target.closest('button,.btn'), false); if (r.success) m.close();
+      const tandaiBaca = (id) => { if (id && !S.boot.u.dibaca.includes(id)) S.boot.u.dibaca.push(id); };
+      K.saveLocal({ action: 'pengumuman.save', data: Object.assign({ pengumuman_id: p ? p.pengumuman_id : '' }, fd), list: () => S.boot.g.pengumuman, key: 'pengumuman_id', modal: m, prepend: true, reopen: (d) => annForm(d),
+        row: Object.assign({ pembuat_id: S.me.user_id, tanggal: new Date().toISOString(), status_kirim: 'Menyimpan…' }, p || {}, { pengumuman_id: p ? p.pengumuman_id : '', judul: fd.judul.trim(), isi: fd.isi.trim(), target: fd.target, mk_id: fd.target === 'Matakuliah' ? fd.mk_id : '', kanal: fd.kanal.join(','), popup: fd.kanal.indexOf('Popup') > -1 ? 'YA' : 'TIDAK' }),
+        onLocal: (r) => tandaiBaca(r.pengumuman_id), onSaved: (d) => d && tandaiBaca(d.pengumuman_id) });
     };
   }
   function renderPengumuman(el) {
@@ -685,7 +696,12 @@
       body: '<div class="form-grid"><div class="field full"><label>Judul <span class="req">*</span></label><input class="inp" name="judul" value="' + esc(x ? x.judul : '') + '"></div><div class="field"><label>Mulai <span class="req">*</span></label><input class="inp" type="date" name="tanggal_mulai" value="' + esc(x ? ymd(x.tanggal_mulai) : '') + '"></div><div class="field"><label>Selesai</label><input class="inp" type="date" name="tanggal_selesai" value="' + esc(x ? ymd(x.tanggal_selesai) : '') + '"></div>' +
         '<div class="field"><label>Kategori</label><select class="inp" name="kategori">' + ['Perkuliahan', 'Ujian', 'Deadline Kampus', 'Kegiatan Kelas', 'Libur'].map((k) => '<option ' + (x && x.kategori === k ? 'selected' : '') + '>' + k + '</option>').join('') + '</select></div><div class="field full"><label>Keterangan</label><input class="inp" name="keterangan" value="' + esc(x ? x.keterangan : '') + '"></div></div>',
       foot: '<button class="btn ghost" data-close>Batal</button><button class="btn" data-save>Simpan</button>' });
-    $('[data-save]', m.el).onclick = async (e) => { const fd = formData(m.el); busy(e.target.closest('button,.btn'), true); const r = await mutate('timeline.save', Object.assign({ rencana_id: x ? x.rencana_id : '' }, fd), { apply: (d) => upsertLocal(S.boot.g.timeline, 'rencana_id', d) }); busy(e.target.closest('button,.btn'), false); if (r.success) m.close(); };
+    $('[data-save]', m.el).onclick = () => {
+      const fd = formData(m.el);
+      if (!fd.judul.trim() || !fd.tanggal_mulai) return toast('Judul dan tanggal mulai wajib diisi.', 'error');
+      K.saveLocal({ action: 'timeline.save', data: Object.assign({ rencana_id: x ? x.rencana_id : '' }, fd), list: () => S.boot.g.timeline, key: 'rencana_id', modal: m, reopen: (d) => timelineForm(d),
+        row: Object.assign({ semester_id: D.smtAktifId() }, x || {}, { rencana_id: x ? x.rencana_id : '', judul: fd.judul.trim(), tanggal_mulai: fd.tanggal_mulai, tanggal_selesai: fd.tanggal_selesai || fd.tanggal_mulai, kategori: fd.kategori || 'Perkuliahan', keterangan: fd.keterangan }) });
+    };
   }
   function todoForm(x) {
     const m = modal({ title: x ? 'Ubah To-Do' : 'Tambah To-Do Wajib', icon: 'list-checks',
@@ -694,7 +710,11 @@
         '<div class="field"><label>Untuk</label><select class="inp" name="jenis_kelas">' + ['Semua', 'P2K', 'Reguler'].map((k) => '<option ' + (x && x.jenis_kelas === k ? 'selected' : '') + '>' + k + '</option>').join('') + '</select></div><div class="field"><label>Mata Kuliah (opsional)</label><select class="inp" name="mk_id"><option value="">—</option>' + D.mkAktif().map((mk) => '<option value="' + mk.mk_id + '" ' + (x && x.mk_id === mk.mk_id ? 'selected' : '') + '>' + esc(mk.nama) + '</option>').join('') + '</select></div>' +
         '<div class="field full"><label>Keterangan</label><input class="inp" name="keterangan" value="' + esc(x ? x.keterangan : '') + '"></div><label class="check"><input type="checkbox" name="wajib" ' + (!x || x.wajib === 'YA' ? 'checked' : '') + '>Wajib</label></div>',
       foot: '<button class="btn ghost" data-close>Batal</button><button class="btn" data-save>Simpan</button>' });
-    $('[data-save]', m.el).onclick = async (e) => { const fd = formData(m.el); if (!fd.judul.trim()) return toast('Judul wajib diisi.', 'error'); busy(e.target.closest('button,.btn'), true); const r = await mutate('todo.save', Object.assign({ todo_id: x ? x.todo_id : '' }, fd), { apply: (d) => upsertLocal(S.boot.g.todo, 'todo_id', d) }); busy(e.target.closest('button,.btn'), false); if (r.success) m.close(); };
+    $('[data-save]', m.el).onclick = () => {
+      const fd = formData(m.el); if (!fd.judul.trim()) return toast('Judul wajib diisi.', 'error');
+      K.saveLocal({ action: 'todo.save', data: Object.assign({ todo_id: x ? x.todo_id : '' }, fd), list: () => S.boot.g.todo, key: 'todo_id', modal: m, reopen: (d) => todoForm(d),
+        row: Object.assign({}, x || {}, { todo_id: x ? x.todo_id : '', judul: fd.judul.trim(), sumber: fd.sumber, deadline: fd.deadline, wajib: fd.wajib ? 'YA' : 'TIDAK', mk_id: fd.mk_id, jenis_kelas: fd.jenis_kelas || 'Semua', keterangan: fd.keterangan }) });
+    };
   }
   function renderTarget(body) {
     const admin = D.isAdmin(), st = body._ts || (body._ts = { mhs: S.me.mhs_id || '' });
@@ -734,23 +754,27 @@
         '<label class="check"><input type="checkbox" name="tercapai" ' + (x && x.status === 'Tercapai' ? 'checked' : '') + '>Tandai Tercapai</label></div>',
       foot: '<button class="btn ghost" data-close>Batal</button><button class="btn" data-save>Simpan</button>' });
     $('[name=progres]', m.el).oninput = (e) => ($('#pv', m.el).textContent = e.target.value + '%');
-    $('[data-save]', m.el).onclick = async (e) => {
+    $('[data-save]', m.el).onclick = () => {
       const fd = formData(m.el); if (!fd.judul_target.trim()) return toast('Judul wajib diisi.', 'error');
-      busy(e.target.closest('button,.btn'), true);
-      const arr = D.isAdmin() ? S.boot.a.target : S.boot.u.target;
-      const r = await mutate('target.save', { target_id: x ? x.target_id : '', mhs_id: mhsId, judul_target: fd.judul_target, tenggat: fd.tenggat, progres: Number(fd.progres), catatan: fd.catatan, status: fd.tercapai ? 'Tercapai' : '' }, { apply: (d) => upsertLocal(arr, 'target_id', d) });
-      busy(e.target.closest('button,.btn'), false); if (r.success) m.close();
+      const arr = D.isAdmin() ? S.boot.a.target : S.boot.u.target, prog = Number(fd.progres);
+      const st = fd.tercapai || prog >= 100 ? 'Tercapai' : (fd.tenggat && fd.tenggat < todayYmd() ? 'Terlambat' : (prog > 0 ? 'Proses' : 'Belum'));
+      K.saveLocal({ action: 'target.save', data: { target_id: x ? x.target_id : '', mhs_id: mhsId, judul_target: fd.judul_target, tenggat: fd.tenggat, progres: prog, catatan: fd.catatan, status: fd.tercapai ? 'Tercapai' : '' },
+        list: () => arr, key: 'target_id', modal: m, reopen: (d) => targetForm(d, mhsId),
+        row: Object.assign({}, x || {}, { target_id: x ? x.target_id : '', mhs_id: mhsId, judul_target: fd.judul_target.trim(), tenggat: fd.tenggat, progres: prog, catatan: fd.catatan, status: st }) });
     };
   }
   function lulusForm(me) {
     const m = modal({ title: 'Target Semester Lulus', sub: esc(me.nama_lengkap || ''), icon: 'graduation-cap', size: 'sm',
       body: '<div class="field"><label>Target lulus</label><select class="inp" name="t">' + ['Semester 3 (Akselerasi)', 'Semester 4 (Tepat Waktu)', 'Semester 5', 'Semester 6', 'Semester 7+'].map((x) => '<option ' + (me.target_lulus_semester === x ? 'selected' : '') + '>' + x + '</option>').join('') + '</select></div>',
       foot: '<button class="btn ghost" data-close>Batal</button><button class="btn" data-save>Simpan</button>' });
-    $('[data-save]', m.el).onclick = async (e) => {
+    $('[data-save]', m.el).onclick = () => {
       const v = $('[name=t]', m.el).value, arr = D.isAdmin() ? S.boot.a.target : S.boot.u.target, ex = arr.find((t) => t.mhs_id === me.mhs_id && /lulus/i.test(t.judul_target));
-      busy(e.target.closest('button,.btn'), true);
-      const r = await mutate('target.save', { target_id: ex ? ex.target_id : '', mhs_id: me.mhs_id, judul_target: ex ? ex.judul_target : 'Lulus ' + v, tenggat: ex ? ex.tenggat : '', progres: ex ? ex.progres : 0, target_lulus_semester: v }, { apply: (d) => { upsertLocal(arr, 'target_id', d); if (S.idx.mhs[me.mhs_id]) S.idx.mhs[me.mhs_id].target_lulus_semester = v; } });
-      busy(e.target.closest('button,.btn'), false); if (r.success) m.close();
+      const srcs = [S.boot.g.mahasiswa].concat(S.boot.a ? [S.boot.a.mahasiswa] : []), lama = me.target_lulus_semester;
+      m.close();
+      mutate('target.save', { target_id: ex ? ex.target_id : '', mhs_id: me.mhs_id, judul_target: ex ? ex.judul_target : 'Lulus ' + v, tenggat: ex ? ex.tenggat : '', progres: ex ? ex.progres : 0, target_lulus_semester: v }, {
+        optimistic: () => srcs.forEach((a) => a.forEach((x) => { if (x.mhs_id === me.mhs_id) x.target_lulus_semester = v; })),
+        rollback: () => srcs.forEach((a) => a.forEach((x) => { if (x.mhs_id === me.mhs_id) x.target_lulus_semester = lama; })),
+        apply: (d) => upsertLocal(arr, 'target_id', d) });
     };
   }
   K.registerPage('rencana', { title: 'Rencana', show: renderRencana });
@@ -841,12 +865,13 @@
         '<div class="field"><label>Email Google</label><input class="inp" value="' + esc(me.email) + '" readonly></div><div class="field"><label>Angkatan / Konsentrasi</label><input class="inp" value="' + esc([m.angkatan, m.konsentrasi].filter(Boolean).join(' · ') || '-') + '" readonly></div></div>' +
         '<div class="row mt20"><button class="btn" data-save>' + ic('check') + 'Simpan Profil</button><button class="btn ghost" data-logout>' + ic('log-out') + 'Keluar</button></div></div>' +
         '<div class="card"><div class="card-h"><h3>Aktivitas Saya</h3></div><div class="col"><div class="tile row between"><span>Tugas presentasi</span><b>' + D.tugasSaya().length + '</b></div><div class="tile row between"><span>Berkas lengkap</span><b>' + D.tugasSaya().filter((t) => D.statusTugas(t) === 'Terkumpul').length + '</b></div><div class="tile row between"><span>Target pribadi</span><b>' + S.boot.u.target.length + '</b></div><div class="tile row between"><span>Status kelulusan</span>' + (m.status_target ? statusChip(m.status_target) : '<b>-</b>') + '</div></div></div></div>';
-      $('[data-save]', el).onclick = async (e) => {
+      $('[data-save]', el).onclick = () => {
         const fd = formData(el);
         if (!K.hpValid(fd.no_hp)) return toast('Nomor HP tidak valid.', 'error');
-        busy(e.target.closest('button,.btn'), true);
-        const r = await mutate('profile.save', { nama_lengkap: fd.nama_lengkap, no_hp: K.hp08(fd.no_hp) }, { apply: () => { S.boot.me.nama_lengkap = fd.nama_lengkap; S.boot.me.no_hp = K.hp08(fd.no_hp); K.renderShell(); } });
-        busy(e.target.closest('button,.btn'), false);
+        const prev = { n: S.boot.me.nama_lengkap, h: S.boot.me.no_hp };
+        mutate('profile.save', { nama_lengkap: fd.nama_lengkap, no_hp: K.hp08(fd.no_hp) }, {
+          optimistic: () => { S.boot.me.nama_lengkap = fd.nama_lengkap; S.boot.me.no_hp = K.hp08(fd.no_hp); K.renderShell(); },
+          rollback: () => { S.boot.me.nama_lengkap = prev.n; S.boot.me.no_hp = prev.h; K.renderShell(); } });
       };
     }
   });
