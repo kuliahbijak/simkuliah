@@ -35,7 +35,7 @@
   function renderMaster(el, param) {
     const a = S.boot.a, g = S.boot.g;
     const st = el._st || (el._st = { tab: 'verif' });
-    if (param && param !== st._p) { st._p = param; if (['verif', 'mhs', 'mk', 'smt', 'dosen', 'jadwal'].indexOf(param) > -1) st.tab = param; }
+    if (param && param !== st._p) { st._p = param; if (['verif', 'mhs', 'mk', 'smt', 'dosen', 'jadwal', 'tanggal'].indexOf(param) > -1) st.tab = param; }
     const pend = D.pendingRegs(), mhs = a.mahasiswa.filter((m) => m.status !== 'Nonaktif'), jf = D.jenisFilter();
     if (!pend.length && st.tab === 'verif' && !param) st.tab = 'mhs';
     el.innerHTML = '<div class="crumb">MASTER DATA · MANAJEMEN PENGGUNA · <b>' + esc(D.smtAktif().nama_semester || '') + '</b></div>' +
@@ -46,7 +46,7 @@
       kpiC('Menunggu Verifikasi', pend.length, pend.length ? '<span class="chip amber">Perlu Aksi</span>' : '<span class="chip green">Bersih</span>', 'user-check', 'amber', 'verif') +
       kpiC('Dosen Pengampu', a.dosen.filter((x) => x.status !== 'Nonaktif').length, '<span class="small muted">' + D.mkAktif().length + ' mata kuliah aktif</span>', 'user-cog', '', 'dosen') +
       kpiC('Akun Aktif', a.users.filter((u) => u.status_akun === 'Aktif').length, '<span class="small muted">login Google OAuth</span>', 'shield-check', 'green', D.isOp() ? 'roles' : 'mhs') + '</div>' +
-      '<div class="mt20">' + tabsHtml([['verif', 'Verifikasi Pendaftaran', 'shield-check', pend.length], ['mhs', 'Daftar Mahasiswa', 'users', a.mahasiswa.length], ['mk', 'Mata Kuliah & SKS', 'book-open', g.mk.length], ['smt', 'Semester', 'calendar-days', g.semester.length], ['dosen', 'Dosen Pengampu', 'user-cog', a.dosen.length], ['jadwal', 'Jadwal', 'clock', g.jadwal.length]], st.tab) + '</div><div class="card" id="msBody"></div>';
+      '<div class="mt20">' + tabsHtml([['verif', 'Verifikasi Pendaftaran', 'shield-check', pend.length], ['mhs', 'Daftar Mahasiswa', 'users', a.mahasiswa.length], ['mk', 'Mata Kuliah & SKS', 'book-open', g.mk.length], ['tanggal', 'Tanggal Pertemuan', 'calendar-range', D.mkAktif().length], ['smt', 'Semester', 'calendar-days', g.semester.length], ['dosen', 'Dosen Pengampu', 'user-cog', a.dosen.length], ['jadwal', 'Jadwal', 'clock', g.jadwal.length]], st.tab) + '</div><div class="card" id="msBody"></div>';
     $$('[data-tab]', el).forEach((b) => (b.onclick = () => { st.tab = b.dataset.tab; renderMaster(el); }));
     $$('[data-kpi]', el).forEach((b) => (b.onclick = () => { if (b.dataset.kpi === 'roles') return K.go('roles'); st.tab = b.dataset.kpi; renderMaster(el); }));
     $('[data-import]', el).onclick = () => importModal();
@@ -58,7 +58,7 @@
       Jadwal: g.jadwal.map((j) => ({ 'Mata Kuliah': (S.idx.mk[j.mk_id] || {}).nama, Hari: j.hari, Mulai: j.jam_mulai, Selesai: j.jam_selesai, Ruang: j.ruang, Kelas: j.jenis_kelas }))
     }).catch((e) => toast(e.message, 'error'));
     const body = $('#msBody', el);
-    ({ verif: tabVerif, mhs: tabMhs, mk: tabMk, smt: tabSmt, dosen: tabDosen, jadwal: tabJadwal })[st.tab](body, jf);
+    ({ verif: tabVerif, mhs: tabMhs, mk: tabMk, smt: tabSmt, dosen: tabDosen, jadwal: tabJadwal, tanggal: tabTanggal })[st.tab](body, jf);
   }
   function kpiC(lbl, val, sub, icn, cls, go) { return '<div class="card kpi kpi-click" data-kpi="' + go + '"><div style="min-width:0"><div class="lbl">' + esc(lbl) + '</div><div class="stat mt8">' + val + '</div><div class="mt8">' + sub + '</div></div><span class="ic ' + (cls || '') + '">' + ic(icn) + '</span></div>'; }
 
@@ -69,7 +69,7 @@
     table($('#vt', body), {
       rows, per: 20, empty: 'Tidak ada pendaftar yang menunggu verifikasi.',
       cols: [
-        { k: 'nama', t: 'Mahasiswa & Akun Google', sortVal: (r) => r.nama_lengkap, render: (r) => '<div class="person">' + avatar(r.nama_lengkap) + '<div class="t"><b>' + esc(r.nama_lengkap) + '</b><span>' + ic('circle-check') + ' ' + esc(r.email) + '</span></div></div>' },
+        { k: 'nama', t: 'Mahasiswa & Akun Google', sortVal: (r) => r.nama_lengkap, render: (r) => '<div class="person">' + K.avUsr(r) + '<div class="t"><b>' + esc(r.nama_lengkap) + '</b><span>' + ic('circle-check') + ' ' + esc(r.email) + '</span></div></div>' },
         { k: 'hp', t: 'WhatsApp', render: (r) => '<span class="mono">' + esc(r.no_hp) + '</span>' },
         { k: 'tgl', t: 'Waktu Daftar', sortVal: (r) => r.tanggal_daftar, render: (r) => esc(fmtWaktu(r.tanggal_daftar)) + '<div class="xs muted">' + fmtRel(r.tanggal_daftar) + '</div>' },
         { k: 'jenis', t: 'Jenis Mahasiswa', sort: false, render: (r) => '<select class="inp" data-j="' + r.user_id + '" style="min-width:140px"><option value="P2K" ' + (r.jenis_mahasiswa === 'P2K' ? 'selected' : '') + '>P2K (Karyawan)</option><option value="Reguler" ' + (r.jenis_mahasiswa === 'Reguler' ? 'selected' : '') + '>Reguler</option></select>' },
@@ -105,7 +105,7 @@
         $('[data-s]', tl).onchange = (e) => { st.s = e.target.value; body.innerHTML = ''; tabMhs(body); };
       },
       cols: [
-        { k: 'nama', t: 'NIM & Profil Mahasiswa', sortVal: (m) => m.nama_lengkap, render: (m) => '<div class="person">' + avatar(m.nama_lengkap, 'sm') + '<div class="t"><b>' + esc(m.nama_lengkap) + '</b><span class="mono">NIM: ' + esc(m.nim || '—') + '</span></div></div>' },
+        { k: 'nama', t: 'NIM & Profil Mahasiswa', sortVal: (m) => m.nama_lengkap, render: (m) => '<div class="person">' + K.avMhs(m, 'sm') + '<div class="t"><b>' + K.profLink('mhs', m.mhs_id, m.nama_lengkap) + '</b><span class="mono">NIM: ' + esc(m.nim || '—') + '</span></div></div>' },
         { k: 'email', t: 'Email Akademik', render: (m) => '<span class="small">' + esc(m.email) + '</span>' },
         { k: 'jenis_mahasiswa', t: 'Program / Jalur', render: (m) => chipJenis(m.jenis_mahasiswa) },
         { k: 'angkatan', t: 'Angkatan', render: (m) => esc(m.angkatan || '—') },
@@ -327,7 +327,7 @@
   function tabDosen(body) {
     body.innerHTML = '<div class="card-h"><div><h3>Dosen Pengampu</h3><div class="sub">Dosen hanya sebagai data master (tidak login).</div></div><button class="btn sm" data-add>' + ic('plus') + 'Dosen</button></div><div id="dt"></div>';
     table($('#dt', body), { rows: S.boot.a.dosen, placeholder: 'Cari dosen…', search: (d) => d.nama + ' ' + d.email + ' ' + d.bidang,
-      cols: [{ k: 'nama', t: 'Nama', render: (d) => '<div class="person">' + avatar(d.nama, 'sm') + '<div class="t"><b>' + esc(d.nama) + '</b><span>' + esc(d.bidang || '') + '</span></div></div>' }, { k: 'email', t: 'Email' }, { k: 'no_hp', t: 'No HP', render: (d) => '<span class="mono">' + esc(d.no_hp || '—') + '</span>' },
+      cols: [{ k: 'nama', t: 'Nama', render: (d) => '<div class="person">' + K.avDsn(d, 'sm') + '<div class="t"><b>' + K.profLink('dsn', d.dosen_id, d.nama) + '</b><span>' + esc(d.bidang || '') + '</span></div></div>' }, { k: 'email', t: 'Email' }, { k: 'no_hp', t: 'No HP', render: (d) => '<span class="mono">' + esc(d.no_hp || '—') + '</span>' },
         { k: 'mk', t: 'Mata Kuliah', sort: false, render: (d) => S.boot.g.mk.filter((m) => m.dosen_id === d.dosen_id).map((m) => '<span class="chip">' + esc(m.kode) + '</span>').join(' ') || '—' }, { k: 'status', t: 'Status', render: (d) => statusChip(d.status || 'Aktif') },
         { k: 'aksi', t: '', sort: false, render: (d) => '<div class="row gap4"><button class="btn icon sm ghost" data-ed="' + d.dosen_id + '">' + ic('pencil') + '</button>' + (d.status !== 'Nonaktif' ? '<button class="btn icon sm ghost" data-off="' + d.dosen_id + '">' + ic('ban') + '</button>' : '') + '</div>' }],
       after: (tb) => { $$('[data-ed]', tb).forEach((b) => (b.onclick = () => dosenForm(S.boot.a.dosen.find((x) => x.dosen_id === b.dataset.ed)))); $$('[data-off]', tb).forEach((b) => (b.onclick = () => nonaktif('Dosen', S.boot.a.dosen.find((x) => x.dosen_id === b.dataset.off)))); } });
@@ -364,6 +364,37 @@
       K.saveLocal({ action: 'master.save', data: { sheet: 'Jadwal', row }, list: () => S.boot.g.jadwal, key: 'jadwal_id', modal: md, reopen: (x) => jadwalForm(x), row: Object.assign({}, j, row) });
     };
   }
+  /** v1.2 — Tanggal Pertemuan: isi tanggal kuliah pertama per mata kuliah → 16 sesi terisi otomatis setiap minggu. */
+  function tabTanggal(body) {
+    const mks = D.mkAktif();
+    body.innerHTML = '<div class="card-h"><div><h3>Tanggal Pertemuan Otomatis</h3><div class="sub">Isi <b>tanggal perkuliahan pertama</b> setiap mata kuliah — sesi 2–16 terisi otomatis setiap minggu (UTS sesi 8, UAS sesi 16). Bila dosen membatalkan/memindah satu sesi, ubah di halaman mata kuliah → Kelola Sesi (opsi geser sesi berikutnya).</div></div>' +
+      '<button class="btn sm" data-semua>' + ic('wand-sparkles') + 'Terapkan Semua</button></div>' +
+      (mks.length ? mks.map((m) => {
+        const ps = S.idx.ptmByMk[m.mk_id] || [], isi = ps.filter((p) => ymd(p.tanggal)).length, j = (S.idx.jadwalByMk[m.mk_id] || [])[0], awal = K.saranSesi1(m.mk_id);
+        return '<div class="tgl-row" data-mk="' + m.mk_id + '"><div style="min-width:0"><span class="chip blue">' + esc(m.kode) + '</span> <b class="semi">' + esc(m.nama) + '</b><div class="small muted mt8">' + (j ? 'Jadwal rutin: ' + esc(j.hari + ' ' + j.jam_mulai) : 'Jadwal rutin belum diisi') + ' · ' + isi + '/' + ps.length + ' tanggal terisi</div></div>' +
+          '<span class="small muted" data-hari></span><input class="inp" type="date" value="' + esc(awal) + '" aria-label="Tanggal pertemuan pertama ' + esc(m.nama) + '">' +
+          '<div class="tgl-prev" data-prev></div><div class="row gap6"><button class="btn sm" data-ok>' + ic('check') + 'Terapkan</button><button class="btn icon sm ghost" data-det title="Atur lanjutan (mulai dari sesi tertentu)">' + ic('settings') + '</button></div></div>';
+      }).join('') : '<div class="empty">Belum ada mata kuliah aktif.</div>');
+    const prev = (row) => {
+      const id = row.dataset.mk, v = $('input', row).value, ps = S.idx.ptmByMk[id] || [], map = {};
+      if (v) K.hitungJadwal(id, v, 1).forEach((u) => (map[u.p.pertemuan_id] = u.baru));
+      $('[data-hari]', row).textContent = v ? 'Hari ' + K.hariOf(v) : '';
+      $('[data-prev]', row).innerHTML = ps.filter((p) => [1, 2, 8, 9, 16].indexOf(Number(p.nomor)) > -1).map((p) => { const b = map[p.pertemuan_id], beda = b && b !== ymd(p.tanggal); return '<span class="' + (p.jenis !== 'Pembelajaran' ? 'uj' : '') + '" style="' + (beda ? 'border-color:var(--primary);color:var(--primary-ink);font-weight:600' : '') + '">S' + p.nomor + (p.jenis !== 'Pembelajaran' ? ' ' + p.jenis : '') + ' · ' + esc(fmtTgl(b || p.tanggal) || '—') + '</span>'; }).join('');
+    };
+    $$('.tgl-row', body).forEach((row) => {
+      prev(row);
+      $('input', row).addEventListener('input', () => prev(row)); $('input', row).addEventListener('change', () => prev(row));
+      $('[data-ok]', row).onclick = () => { const v = $('input', row).value; if (!v) return toast('Isi tanggal pertemuan pertama.', 'error'); K.jadwalkan(row.dataset.mk, v, 1); };
+      $('[data-det]', row).onclick = () => K.jadwalkanForm(row.dataset.mk);
+    });
+    const all = $('[data-semua]', body);
+    if (all) all.onclick = async () => {
+      const rows = $$('.tgl-row', body).filter((r) => $('input', r).value);
+      if (!rows.length) return toast('Isi tanggal pertemuan pertama.', 'error');
+      if (!(await confirmDlg('Terapkan tanggal ' + rows.length + ' mata kuliah?', 'Tanggal 16 pertemuan setiap mata kuliah dihitung ulang mingguan dari tanggal pertama yang diisi. Tanggal presentasi & deadline penugasan ikut menyesuaikan.', { ok: 'Ya, terapkan' }))) return;
+      rows.forEach((r) => K.jadwalkan(r.dataset.mk, $('input', r).value, 1));
+    };
+  }
   K.registerPage('master', { auth: 'admin', title: 'Master Data', show: renderMaster });
 
   // ============================================================== DETAIL MAHASISWA
@@ -378,7 +409,7 @@
       const todos = S.boot.g.todo.filter((t) => !t.jenis_kelas || t.jenis_kelas === 'Semua' || t.jenis_kelas === m.jenis_mahasiswa), done = S.boot.a.todoStatus.filter((s) => s.mhs_id === id && s.selesai === 'Y').length;
       el.innerHTML = '<div class="crumb"><a href="#/master/mhs">Master Data</a>' + ic('chevron-right') + '<a href="#/master/mhs">Direktori Mahasiswa</a>' + ic('chevron-right') + '<b>' + esc(m.nama_lengkap) + '</b></div>' +
         '<div class="page-h"><h1>Detail Profil Mahasiswa</h1><div class="row wrap"><a class="btn ghost" href="#/master/mhs">' + ic('arrow-left') + 'Kembali</a><button class="btn ghost" data-notif>' + ic('send') + 'Kirim Notifikasi</button><button class="btn" data-edit>' + ic('pencil') + 'Perbarui Profil</button></div></div>' +
-        '<div class="card pad-lg" style="background:linear-gradient(120deg,#fff 60%,#F3F5FF)"><div class="row wrap" style="gap:22px;align-items:flex-start">' + avatar(m.nama_lengkap, 'lg') + '<div class="grow"><div class="row wrap gap6"><h2 style="font-size:26px">' + esc(m.nama_lengkap) + '</h2>' + chipJenis(m.jenis_mahasiswa) + '</div>' +
+        '<div class="card pad-lg" style="background:linear-gradient(120deg,#fff 60%,#F3F5FF)"><div class="row wrap" style="gap:22px;align-items:flex-start"><div class="prof-ph">' + (K.Foto.of(m.mhs_id) ? '<img src="' + esc(K.Foto.of(m.mhs_id)) + '" alt="">' : '<span class="ini">' + esc(K.initials(m.nama_lengkap)) + '</span>') + '<button class="prof-cam" data-mfoto title="Ganti foto">' + ic('camera') + '</button></div><div class="grow"><div class="row wrap gap6"><h2 style="font-size:26px">' + esc(m.nama_lengkap) + '</h2>' + chipJenis(m.jenis_mahasiswa) + '</div>' +
         '<div class="row wrap gap6 mt8">' + (u ? '<span class="chip blue">' + ic('shield-check') + esc(K.ROLE_LABEL[u.role]) + '</span>' : '<span class="chip">Belum punya akun login</span>') + (u ? statusChip(u.status_akun) : '') + '</div>' +
         '<div class="row wrap mt12 small" style="gap:18px"><span>' + ic('file-text') + ' NIM: <b>' + esc(m.nim || '—') + '</b></span><span>' + ic('calendar-days') + ' ' + esc(m.angkatan || '—') + '</span><span>' + ic('graduation-cap') + ' ' + esc(m.konsentrasi || 'Konsentrasi belum diisi') + '</span></div>' +
         '<div class="small muted mt8">Status: ' + statusChip(m.status || 'Aktif') + (u && u.last_login ? ' · Login terakhir ' + fmtRel(u.last_login) : '') + '</div></div>' +
@@ -386,6 +417,7 @@
         '<div class="mt20">' + tabsHtml([['info', 'Informasi Umum & Kontak', 'user-cog'], ['tugas', 'Riwayat Penugasan & Makalah', 'presentation', ts.length], ['target', 'Target & Rencana Kelulusan', 'target', tg.length]], st.tab) + '</div><div id="mdBody"></div>';
       $$('[data-tab]', el).forEach((b) => (b.onclick = () => { st.tab = b.dataset.tab; Pages_show(el, id); }));
       $('[data-edit]', el).onclick = () => mhsForm(m);
+      $('[data-mfoto]', el).onclick = () => K.pilihFoto(m.mhs_id, m.nama_lengkap);
       $('[data-notif]', el).onclick = () => kirimSatu(m);
       const body = $('#mdBody', el);
       if (st.tab === 'info') {
@@ -435,7 +467,7 @@
       table($('#rt', el), { rows: users, per: 20, placeholder: 'Cari nama / email…', search: (u) => u.nama_lengkap + ' ' + u.email,
         tools: '<div class="seg" data-seg>' + [['', 'Semua'], ['Aktif', 'Aktif ' + c('Aktif')], ['Menunggu', 'Menunggu ' + c('Menunggu')], ['Nonaktif', 'Nonaktif ' + c('Nonaktif')], ['Ditolak', 'Ditolak ' + c('Ditolak')]].map((x) => '<button data-s="' + x[0] + '" class="' + (st.s === x[0] ? 'on' : '') + '">' + x[1] + '</button>').join('') + '</div>',
         onTools: (tl) => $$('[data-s]', tl).forEach((b) => (b.onclick = () => { st.s = b.dataset.s; el.innerHTML = ''; K.rerender(); })),
-        cols: [{ k: 'nama', t: 'Pengguna', sortVal: (u) => u.nama_lengkap, render: (u) => '<div class="person">' + avatar(u.nama_lengkap, 'sm') + '<div class="t"><b>' + esc(u.nama_lengkap) + (u.user_id === S.me.user_id ? ' <span class="chip blue">Anda</span>' : '') + '</b><span>' + esc(u.email) + '</span></div></div>' },
+        cols: [{ k: 'nama', t: 'Pengguna', sortVal: (u) => u.nama_lengkap, render: (u) => '<div class="person">' + K.avUsr(u, 'sm') + '<div class="t"><b>' + esc(u.nama_lengkap) + (u.user_id === S.me.user_id ? ' <span class="chip blue">Anda</span>' : '') + '</b><span>' + esc(u.email) + '</span></div></div>' },
           { k: 'jenis', t: 'Jenis', sortVal: (u) => u.jenis_mahasiswa, render: (u) => chipJenis(u.jenis_mahasiswa) || '—' },
           { k: 'role', t: 'Peran', sortVal: (u) => u.role, render: (u) => '<select class="inp" data-role="' + u.user_id + '" style="min-width:150px">' + ROLE_OPT(u.role, true) + '</select>' },
           { k: 'status', t: 'Status Akun', sortVal: (u) => u.status_akun, render: (u) => (u.status_akun === 'Menunggu' ? '<a class="chip amber" href="#/master/verif">Menunggu → verifikasi</a>' : '<label class="switch"><input type="checkbox" data-act="' + u.user_id + '" ' + (u.status_akun === 'Aktif' ? 'checked' : '') + '><span class="tr"></span>' + esc(u.status_akun) + '</label>') },
@@ -463,12 +495,12 @@
     auth: 'op', title: 'Pengaturan', selfManaged: true,
     show(el, param) {
       const st = el._st || (el._st = { tab: param || 'umum' });
-      if (param && ['umum', 'sistem', 'migrasi', 'audit'].indexOf(param) > -1) st.tab = param;
-      el.innerHTML = '<div class="page-h"><div><h1>Pengaturan</h1><div class="sub">Identitas aplikasi, logo, semester aktif, sistem & trigger, migrasi data, dan log audit. Hanya Operator.</div></div></div>' +
-        tabsHtml([['umum', 'Umum & Logo', 'settings'], ['sistem', 'Sistem & Trigger', 'server'], ['migrasi', 'Migrasi Data', 'database'], ['audit', 'Log Audit', 'history']], st.tab) + '<div id="setBody"></div>';
+      if (param && ['umum', 'apps', 'sistem', 'migrasi', 'audit'].indexOf(param) > -1) st.tab = param;
+      el.innerHTML = '<div class="page-h"><div><h1>Pengaturan</h1><div class="sub">Identitas aplikasi, logo & wallpaper login, aplikasi lain, sistem & trigger, migrasi data, dan log audit. Hanya Operator.</div></div></div>' +
+        tabsHtml([['umum', 'Umum, Logo & Wallpaper', 'settings'], ['apps', 'Aplikasi Lain', 'layout-grid'], ['sistem', 'Sistem & Trigger', 'server'], ['migrasi', 'Migrasi Data', 'database'], ['audit', 'Log Audit', 'history']], st.tab) + '<div id="setBody"></div>';
       $$('[data-tab]', el).forEach((b) => (b.onclick = () => { st.tab = b.dataset.tab; history.replaceState(null, '', '#/settings/' + st.tab); S.param = st.tab; this.show(el, st.tab, true); }));
       const body = $('#setBody', el);
-      ({ umum: setUmum, sistem: setSistem, migrasi: setMigrasi, audit: setAudit })[st.tab](body);
+      ({ umum: setUmum, apps: setApps, sistem: setSistem, migrasi: setMigrasi, audit: setAudit })[st.tab](body);
     }
   });
   function setUmum(body) {
@@ -488,6 +520,8 @@
         '<div class="row mt20"><button class="btn" data-save>' + ic('check') + 'Simpan Pengaturan</button></div></div>' +
         '<div class="card"><div class="card-h"><div><h3>Logo Custom</h3><div class="sub">Tampil sebagai thumbnail di halaman login & sidebar</div></div></div><div class="row" style="gap:18px"><div id="logoPrev" style="width:96px;height:96px;border-radius:22px;background:var(--primary);display:grid;place-items:center;overflow:hidden;color:#fff">' + (br.logo ? '<img src="' + br.logo + '" style="width:100%;height:100%;object-fit:contain;background:#fff">' : ic('graduation-cap')) + '</div>' +
         '<div class="col"><label class="btn ghost">' + ic('upload') + 'Pilih Gambar<input type="file" accept="image/*" hidden data-logo></label><span class="small muted">PNG/JPG/SVG, otomatis dikecilkan ke 256 px.</span></div></div></div></div>';
+      body.insertAdjacentHTML('beforeend', wallpaperCard(s));
+      bindWallpaper(body, s);
       $('[data-save]', body).onclick = async (e) => {
         const fd = formData(body); fd.REMINDER_AKTIF = fd.REMINDER_AKTIF ? 'YA' : 'TIDAK'; fd.BACKUP_MINGGUAN = fd.BACKUP_MINGGUAN ? 'YA' : 'TIDAK';
         busy(e.target.closest('button,.btn'), true, 'Menyimpan…');
@@ -511,6 +545,114 @@
       };
     }, 15000);
   }
+  // ---------------------------------------------------------------- v1.2: wallpaper halaman login
+  function wallpaperCard(s) {
+    const op = s.LOGIN_BG_OPACITY === '' || s.LOGIN_BG_OPACITY == null ? 35 : Number(s.LOGIN_BG_OPACITY);
+    return '<div class="card mt20" id="wpCard"><div class="card-h"><div><h3>Wallpaper Halaman Login</h3><div class="sub">Gambar latar halaman masuk — opasitas diatur agar teks & tombol tetap terbaca.</div></div><span class="chip ' + (s.LOGIN_BG_FILE_ID ? 'green' : '') + '" id="wpStat">' + (s.LOGIN_BG_FILE_ID ? 'Terpasang' : 'Belum ada') + '</span></div>' +
+      '<div class="grid g2" style="gap:22px;align-items:center"><div class="wp-prev" id="wpPrev"><div class="bg"></div><div class="txt"><i></i><i></i><i></i></div><div class="cardm"></div></div>' +
+      '<div class="col" style="gap:14px"><div class="field"><label>Opasitas wallpaper: <b id="wpOpV">' + op + '%</b></label><input type="range" class="op" min="0" max="100" step="5" value="' + op + '" id="wpOp"><span class="hint">0% = hanya warna tema aplikasi · 100% = foto penuh. Disarankan 30–60%.</span></div>' +
+      '<div class="row wrap"><label class="btn">' + ic('image') + 'Pilih Gambar<input type="file" accept="image/*" hidden data-wp></label><button class="btn ghost" data-wpsave>' + ic('check') + 'Simpan Opasitas</button><button class="btn danger" data-wpdel ' + (s.LOGIN_BG_FILE_ID ? '' : 'hidden') + '>' + ic('trash-2') + 'Hapus</button></div>' +
+      '<span class="small muted">JPG/PNG/WebP — otomatis dikecilkan (maks. 1920 px, ±700 KB). Tampil untuk semua orang di halaman login.</span></div></div></div>';
+  }
+  function bindWallpaper(body, s) {
+    const card = $('#wpCard', body); if (!card) return;
+    const bg = $('#wpPrev .bg', card), opIn = $('#wpOp', card);
+    let img = null;
+    const paint = () => { bg.style.backgroundImage = img ? 'url("' + img + '")' : ''; bg.style.opacity = img ? Number(opIn.value) / 100 : 0; $('#wpOpV', card).textContent = opIn.value + '%'; };
+    const br = S.branding || {}, c = K.Wall.get();
+    if (c) { img = c.img; paint(); }
+    else if (s.LOGIN_BG_FILE_ID) K.Wall.sync(Object.assign({}, br, { bg: { ada: true, ver: String(s.LOGIN_BG_FILE_ID).slice(-10), opacity: Number(opIn.value) } })).then((x) => { if (x) { img = x; paint(); } });
+    paint();
+    opIn.oninput = paint;
+    const setBr = (bgv) => { S.branding = Object.assign({}, S.branding || {}, { bg: Object.assign({}, (S.branding || {}).bg || {}, bgv) }); K.Store.set('branding', S.branding); };
+    $('[data-wp]', card).onchange = async (e) => {
+      const f = e.target.files[0]; if (!f) return;
+      const lbl = e.target.closest('label');
+      try {
+        lbl.classList.add('loading');
+        const g = await K.kecilkanGambar(f, { max: 1920, q: 0.82, maxChars: 900000 });
+        img = g.dataUrl; paint();
+        const r = await api('wallpaper.upload', { mime: g.mime, base64: g.base64, opacity: opIn.value });
+        lbl.classList.remove('loading');
+        if (!r.success) return toast(r.message, 'error');
+        K.Store.set('wallpaper', { ver: r.data.ver, img: g.dataUrl }); setBr({ ada: true, ver: r.data.ver, opacity: Number(opIn.value) });
+        $('#wpStat', card).className = 'chip green'; $('#wpStat', card).textContent = 'Terpasang'; $('[data-wpdel]', card).hidden = false;
+        Store.del(userKey('a:settings')); toast(r.message);
+      } catch (er) { lbl.classList.remove('loading'); toast(er.message, 'error'); }
+      e.target.value = '';
+    };
+    $('[data-wpsave]', card).onclick = async (e) => {
+      const b = e.target.closest('button'); busy(b, true, 'Menyimpan…');
+      const r = await api('settings.save', { LOGIN_BG_OPACITY: opIn.value });
+      busy(b, false);
+      if (!r.success) return toast(r.message, 'error');
+      if (!r.data || r.data.LOGIN_BG_OPACITY === undefined) return toast('Server masih versi lama — perbarui backend ke v1.2 dulu.', 'error');
+      Store.set(userKey('a:settings'), { t: Date.now(), data: r.data }); setBr({ opacity: Number(opIn.value) }); toast('Opasitas wallpaper disimpan (' + opIn.value + '%).');
+    };
+    $('[data-wpdel]', card).onclick = async (e) => {
+      if (!(await confirmDlg('Hapus wallpaper login?', 'Halaman login kembali memakai warna tema aplikasi.', { danger: true, ok: 'Hapus' }))) return;
+      const b = e.target.closest('button'); busy(b, true, '');
+      const r = await api('wallpaper.upload', { hapus: true });
+      busy(b, false);
+      if (!r.success) return toast(r.message, 'error');
+      img = null; paint(); K.Store.del('wallpaper'); setBr({ ada: false, ver: '' });
+      $('#wpStat', card).className = 'chip'; $('#wpStat', card).textContent = 'Belum ada'; b.hidden = true; Store.del(userKey('a:settings')); toast(r.message);
+    };
+  }
+
+  // ---------------------------------------------------------------- v1.2: aplikasi lain (tautan untuk semua anggota)
+  const APP_IKON = [['graduation-cap', 'Akademik / SIAKAD'], ['wallet', 'Pembayaran'], ['credit-card', 'Kartu / Tagihan'], ['landmark', 'Kampus / Institusi'], ['globe', 'Situs web'], ['book-open', 'Materi / E-learning'], ['library', 'Perpustakaan'], ['calendar-days', 'Kalender'], ['clipboard-list', 'Formulir / Presensi'], ['file-text', 'Dokumen'], ['video', 'Kelas daring'], ['message-circle', 'Grup / Chat'], ['link', 'Tautan'], ['layout-grid', 'Aplikasi']];
+  const APP_CONTOH = [{ nama: 'SIAKAD Kampus', url: '', ket: 'KRS, KHS & nilai', ikon: 'graduation-cap' }, { nama: 'Sistem Pembayaran', url: '', ket: 'Tagihan & pembayaran kuliah', ikon: 'wallet' }, { nama: 'Lainnya', url: '', ket: '', ikon: 'globe' }];
+  function setApps(body) {
+    body._dirty = false; body._shown = false;
+    if (!Store.get(userKey('a:settings'), null)) body.innerHTML = '<div class="card"><div class="skel" style="height:240px"></div></div>';
+    loadSwr('settings', 'settings.get', {}, (s, fromCache, err) => {
+      if (!s) { if (!body._shown) body.innerHTML = '<div class="card alert err">' + esc(err || 'Gagal memuat.') + '</div>'; return; }
+      if (body._shown && body._dirty) return;
+      body._shown = true;
+      let list = []; try { list = JSON.parse(s.APP_LINKS || '[]'); } catch (e) { list = []; }
+      const contoh = !list.length;
+      if (contoh) list = APP_CONTOH.map((x) => Object.assign({ aktif: true }, x));
+      body.innerHTML = '<div class="split"><div class="card"><div class="card-h"><div><h3>Tautan Aplikasi Lain</h3><div class="sub">Tampil untuk <b>semua anggota</b> di tombol ' + ic('layout-grid') + ' (pojok kanan atas) dan di Dashboard. Atur sendiri nama, link, dan jumlahnya (maks. 20).</div></div></div>' +
+        (contoh ? '<div class="alert info mb12">' + ic('info') + '<span>Contoh di bawah belum tersimpan — isi URL masing-masing aplikasi, hapus yang tidak dipakai, lalu klik <b>Simpan</b>.</span></div>' : '') +
+        '<div id="appRows"></div><div class="row wrap mt12"><button class="btn ghost" data-add>' + ic('plus') + 'Tambah Aplikasi</button><span class="grow"></span><button class="btn" data-save>' + ic('check') + 'Simpan Tautan</button></div></div>' +
+        '<div class="card"><div class="card-h"><div><h3>Pratinjau</h3><div class="sub">Seperti yang dilihat anggota (hanya yang <b>Tampil</b> & ber-URL).</div></div></div><div id="appPrev"></div></div></div>';
+      const prev = () => { const l = list.filter((x) => x.aktif !== false && x.nama && /^https?:\/\//i.test(x.url || '')); $('#appPrev', body).innerHTML = l.length ? K.appTiles(l) : '<div class="empty">' + ic('layout-grid') + '<br>Belum ada tautan yang tampil.</div>'; };
+      const draw = () => {
+        $('#appRows', body).innerHTML = list.length ? list.map((x, i) => '<div class="app-ed" data-i="' + i + '"><select class="inp" data-f="ikon" aria-label="Ikon">' + APP_IKON.map((o) => '<option value="' + o[0] + '" ' + (x.ikon === o[0] ? 'selected' : '') + '>' + esc(o[1]) + '</option>').join('') + '</select>' +
+          '<input class="inp" data-f="nama" placeholder="Nama aplikasi" value="' + esc(x.nama || '') + '" maxlength="40"><input class="inp url" data-f="url" placeholder="https://…" value="' + esc(x.url || '') + '"><input class="inp ket" data-f="ket" placeholder="Keterangan singkat (opsional)" value="' + esc(x.ket || '') + '" maxlength="90">' +
+          '<label class="switch"><input type="checkbox" data-f="aktif" ' + (x.aktif !== false ? 'checked' : '') + '><span class="tr"></span>Tampil</label>' +
+          '<span class="row gap4"><button class="btn icon sm ghost" data-up title="Naik" ' + (i ? '' : 'disabled') + '>' + ic('chevron-up') + '</button><button class="btn icon sm ghost" data-down title="Turun" ' + (i < list.length - 1 ? '' : 'disabled') + '>' + ic('chevron-down') + '</button><button class="btn icon sm ghost" data-del title="Hapus">' + ic('trash-2') + '</button></span></div>').join('')
+          : '<div class="empty">Belum ada aplikasi. Klik <b>Tambah Aplikasi</b>.</div>';
+        $$('.app-ed', body).forEach((row) => {
+          const i = Number(row.dataset.i);
+          $$('[data-f]', row).forEach((f) => { const ev = f.type === 'checkbox' || f.tagName === 'SELECT' ? 'change' : 'input'; f.addEventListener(ev, () => { list[i][f.dataset.f] = f.type === 'checkbox' ? f.checked : f.value; body._dirty = true; prev(); }); });
+          $('[data-up]', row).onclick = () => { list.splice(i - 1, 0, list.splice(i, 1)[0]); body._dirty = true; draw(); };
+          $('[data-down]', row).onclick = () => { list.splice(i + 1, 0, list.splice(i, 1)[0]); body._dirty = true; draw(); };
+          $('[data-del]', row).onclick = () => { list.splice(i, 1); body._dirty = true; draw(); };
+        });
+        prev();
+      };
+      draw();
+      $('[data-add]', body).onclick = () => { if (list.length >= 20) return toast('Maksimal 20 aplikasi.', 'error'); list.push({ nama: '', url: '', ket: '', ikon: 'globe', aktif: true }); body._dirty = true; draw(); const r = $$('.app-ed', body).pop(); if (r) $('[data-f=nama]', r).focus(); };
+      $('[data-save]', body).onclick = async (e) => {
+        const bersih = list.filter((x) => (x.nama || '').trim() || (x.url || '').trim()).map((x) => ({ nama: String(x.nama || '').trim(), url: String(x.url || '').trim(), ket: String(x.ket || '').trim(), ikon: x.ikon || 'globe', aktif: x.aktif !== false }));
+        const salah = bersih.find((x) => !x.nama || !/^https?:\/\/[^\s]+\.[^\s]+/i.test(x.url));
+        if (salah) return toast('Lengkapi nama & URL (diawali https://) untuk "' + (salah.nama || salah.url || 'aplikasi') + '".', 'error');
+        const b = e.target.closest('button'); busy(b, true, 'Menyimpan…');
+        const r = await api('settings.save', { APP_LINKS: JSON.stringify(bersih) });
+        busy(b, false);
+        if (!r.success) return toast(r.message, 'error');
+        if (!r.data || r.data.APP_LINKS === undefined) return toast('Server masih versi lama — perbarui backend ke v1.2 (Kode.gs & Akademik.gs) lalu Deploy versi baru.', 'error');
+        Store.set(userKey('a:settings'), { t: Date.now(), data: r.data });
+        let tampil = []; try { tampil = JSON.parse(r.data.APP_LINKS || '[]').filter((x) => x.aktif); } catch (er) {}
+        S.boot.g.settings.APP_LINKS = tampil; body._dirty = false; list = JSON.parse(r.data.APP_LINKS || '[]');
+        const al = $('.alert.info', body); if (al) al.remove();
+        K.renderShell(); draw(); toast('Tautan aplikasi disimpan — ' + tampil.length + ' aplikasi tampil untuk anggota.'); K.scheduleRefresh();
+      };
+    }, 15000);
+  }
+
   function setSistem(body) {
     body.innerHTML = '<div class="card"><div class="skel" style="height:200px"></div></div>';
     const draw = (s, c, err) => {

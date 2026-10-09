@@ -104,7 +104,7 @@
   };
 
   // ------------------------------------------------------------------ API
-  const READ_ACTIONS = /^(ping|branding|boot|batch|file\.download|settings\.get|system\.status|audit\.list|notif\.(config|queue)|wa\.(audience|blastList|device)|crm\.(list|stats|detail|duplikat|export))$/;
+  const READ_ACTIONS = /^(ping|branding|wallpaper|boot|batch|foto\.list|file\.download|settings\.get|system\.status|audit\.list|notif\.(config|queue)|wa\.(audience|blastList|device)|crm\.(list|stats|detail|duplikat|export))$/;
   function newReqId() { return (crypto.randomUUID ? crypto.randomUUID() : Date.now() + '-' + Math.random().toString(36).slice(2)); }
   async function apiOnce(action, data, timeout, reqId) {
     const ctrl = new AbortController(), timer = setTimeout(() => ctrl.abort(), timeout), t0 = performance.now();
@@ -118,12 +118,12 @@
       try { const j = JSON.parse(text); Perf.add(action, Math.round(performance.now() - t0), j.ms, j.cached || (j.data && j.data.partial && !Object.keys(j.data.g || {}).length)); return j; }
       catch (e) { return { success: false, network: true, retryable: res.status >= 500 || res.status === 429 || res.status === 200, message: 'Server membalas HTTP ' + res.status + ' (bukan JSON). Periksa GAS_URL & deployment.' }; }
     } catch (err) {
-      return { success: false, network: true, retryable: true, message: err.name === 'AbortError' ? 'Server terlalu lama merespons.' : 'Koneksi terputus. Periksa internet Anda.' };
+      return { success: false, network: true, retryable: true, message: err.name === 'AbortError' ? 'Server terlalu lama merespons.' : (navigator.onLine === false ? 'Anda sedang offline. Periksa koneksi internet.' : 'Server tidak dapat dihubungi. Coba lagi sebentar lagi; bila berulang, hubungi Operator.') };
     } finally { clearTimeout(timer); }
   }
   function waitOnline(ms) { return new Promise((r) => { if (navigator.onLine !== false) return r(); const t = setTimeout(done, ms); function done() { clearTimeout(t); removeEventListener('online', done); r(); } addEventListener('online', done); }); }
   // ---- v1.1 Turbo: ID sementara (simpan optimistis), dedupe baca, epoch tulis, antrean latar (drain)
-  const APP_VER = '1.1.0';
+  const APP_VER = '1.2.0';
   const TMP = {}, REAL = {};
   function tmpId() { return 'tmp_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
   /** Ganti ID sementara di payload dengan ID asli (menunggu simpan induknya selesai). */
@@ -173,23 +173,24 @@
     if (!res.success && res.code === 'AUTH' && S.token && action !== 'auth.google') onSessionExpired(res.message);
     return res;
   }
-  /** Unggah dengan progres (XHR) — tetap text/plain + reqId agar aman di-retry. */
+  /**
+   * Unggah berkas — v1.2: lewat fetch text/plain (permintaan "sederhana", TANPA CORS preflight).
+   * v1.1 memakai XHR + xhr.upload.onprogress: listener unggah membuat browser mengirim preflight OPTIONS
+   * yang tidak dijawab Google Apps Script → unggahan selalu gagal "Koneksi terputus". Progres kini diperkirakan
+   * dari ukuran berkas (naik halus sampai 95%) dan menjadi 100% saat server selesai menyimpan.
+   */
   function apiUpload(action, data, onProgress) {
     return resolveTmp(data).then((d) => apiUploadRun(action, d, onProgress), (e) => ({ success: false, message: e.message }));
   }
   function apiUploadRun(action, data, onProgress) {
-    const reqId = newReqId();
-    const once = () => new Promise((resolve) => {
-      const x = new XMLHttpRequest();
-      x.open('POST', CFG.GAS_URL); x.timeout = 180000;
-      x.setRequestHeader('Content-Type', 'text/plain;charset=utf-8');
-      x.upload.onprogress = (e) => { if (e.lengthComputable && onProgress) onProgress(Math.round((e.loaded * 90) / e.total)); };
-      x.onload = () => { try { resolve(JSON.parse(x.responseText)); } catch (e) { resolve({ success: false, retryable: true, message: 'Respons server tidak valid.' }); } };
-      x.onerror = () => resolve({ success: false, retryable: true, message: 'Koneksi terputus saat mengunggah.' });
-      x.ontimeout = () => resolve({ success: false, retryable: true, message: 'Unggahan terlalu lama.' });
-      x.send(JSON.stringify({ action, token: S.token, reqId, data }));
-    });
-    return once().then((r) => (r.success || !r.retryable ? r : once())).then((r) => { if (onProgress) onProgress(100); if (r && r.nq > 0) scheduleDrain(); if (!r.success && r.code === 'AUTH') onSessionExpired(r.message); return r; });
+    const reqId = newReqId(), size = String((data && data.base64) || '').length, t0 = Date.now();
+    const est = Math.max(2500, size / 90);                                     // ±90 KB/dtk termasuk kerja server Drive
+    let tm = null;
+    if (onProgress) { onProgress(3); tm = setInterval(() => onProgress(Math.round(3 + 92 * (1 - Math.exp(-(Date.now() - t0) / est)))), 300); }
+    const once = () => apiOnce(action, data, 300000, reqId);
+    return once()
+      .then((r) => (r.success || !r.retryable ? r : new Promise((ok) => setTimeout(ok, 1500)).then(once)))   // reqId sama → aman diulang
+      .then((r) => { clearInterval(tm); if (onProgress) onProgress(100); if (r && r.nq > 0) scheduleDrain(); if (!r.success && r.code === 'AUTH') onSessionExpired(r.message); return r; });
   }
   /** Warmup server (GET ?w=pub|admin, tanpa data) — maks. 1×/4 menit per lingkup. */
   function warmUp(scope) {
@@ -245,13 +246,13 @@
         if ('a' in d) S.boot.a = d.a === null ? null : Object.assign(S.boot.a || {}, d.a);
         if (d.u !== undefined) S.boot.u = d.u;
         S.boot.me = d.me; S.boot.t = d.t; S.boot.sv = d.sv; S.me = S.boot.me;
-        if (changed) { S.idx = buildIdx(S.boot); const gg = d.g || {}; if (meChanged || 'a' in d || gg.settings || gg.mk || gg.semester) renderShell(); rerender(); }
+        if (changed) { S.idx = buildIdx(S.boot); const gg = d.g || {}; if (meChanged || 'a' in d || gg.settings || gg.mk || gg.semester) renderShell(); rerender(); if (gg.settings) Foto.sync(); }
         Store.set(userKey('boot'), { t: Date.now(), h: bootHash(S.boot), data: S.boot });
         return changed;
       }
       const h = bootHash(d), changed = !c || c.h !== h || !S.boot;
       setBoot(d);
-      if (changed) { renderShell(); rerender(); }
+      if (changed) { renderShell(); rerender(); Foto.sync(); }
       return changed;
     });
     return refreshing;
@@ -430,7 +431,9 @@
       { id: 'dashboard', ic: 'layout-dashboard', t: 'Dashboard' },
       { id: 'mk', ic: 'book-open', t: 'Mata Kuliah', pill: mk.length ? '<span class="pill green">' + mk.length + ' Aktif</span>' : '', sub: mk },
       { id: 'pengumuman', ic: 'megaphone', t: 'Pengumuman', pill: unread ? '<span class="pill amber" data-badge="ann">' + unread + '</span>' : '<span data-badge="ann"></span>' },
+      { id: 'arsip', ic: 'library', t: 'Arsip Materi' },
       { id: 'rencana', ic: 'calendar-days', t: 'Rencana' },
+      { id: 'direktori', ic: 'contact-round', t: 'Anggota & Dosen' },
       { id: 'laporan', ic: 'chart-column', t: 'Laporan' }
     ];
     if (D.isAdmin()) {
@@ -475,8 +478,9 @@
       (D.isAdmin() ? '<select class="top-sel" id="jenisSel" aria-label="Filter jenis mahasiswa"><option value="">Semua Mahasiswa</option><option value="P2K">Mahasiswa P2K</option><option value="Reguler">Mahasiswa Reguler</option></select>' : '') +
       (smt.nama_semester ? '<span class="smt-pill">' + ic('graduation-cap') + esc(smt.nama_semester) + '</span>' : '') +
       '<span class="sync-chip" id="syncChip" hidden></span>' +
+      (appLinks().length || D.isOp() ? '<div style="position:relative"><button class="icon-btn" data-apps aria-label="Aplikasi lain" title="Aplikasi lain">' + ic('layout-grid') + '</button></div>' : '') +
       '<div style="position:relative"><button class="icon-btn" data-bell aria-label="Notifikasi">' + ic('bell') + '<i class="ping" hidden></i></button></div>' +
-      '<div style="position:relative"><button class="me-btn" data-me>' + avatar(me.nama_lengkap, '', S.foto) + '<span class="t"><span class="nm">' + esc(me.nama_lengkap) + '</span><br><span class="rl">' + esc(ROLE_LABEL[me.role]) + '</span></span></button></div>';
+      '<div style="position:relative"><button class="me-btn" data-me>' + avatar(me.nama_lengkap, '', fotoSaya()) + '<span class="t"><span class="nm">' + esc(me.nama_lengkap) + '</span><br><span class="rl">' + esc(ROLE_LABEL[me.role]) + '</span></span></button></div>';
     if ($('#jenisSel')) $('#jenisSel').value = S.jenis;
     if (window.matchMedia('(max-width:767px)').matches) $('[data-search-open]').style.display = 'grid';
     markNav(); updateBadges();
@@ -516,7 +520,8 @@
     q = q.toLowerCase(); const res = [];
     const add = (grp, ic2, t, s, href) => res.push({ grp, ic: ic2, t, s, href });
     D.mkAktif().forEach((m) => { if ((m.nama + ' ' + m.kode).toLowerCase().indexOf(q) > -1) add('Mata Kuliah', 'book-open', m.nama, m.kode, '#/mk/' + m.mk_id); });
-    D.mhsList().forEach((m) => { if ((m.nama_lengkap + ' ' + (m.nim || '') + ' ' + m.email).toLowerCase().indexOf(q) > -1) add('Mahasiswa', 'users', m.nama_lengkap, (m.nim || m.email) + ' · ' + (m.jenis_mahasiswa || ''), D.isAdmin() ? '#/mahasiswa/' + m.mhs_id : '#/laporan'); });
+    D.mhsList().forEach((m) => { if ((m.nama_lengkap + ' ' + (m.nim || '') + ' ' + m.email).toLowerCase().indexOf(q) > -1) add('Mahasiswa', 'users', m.nama_lengkap, (m.nim || m.email) + ' · ' + (m.jenis_mahasiswa || ''), D.isAdmin() ? '#/mahasiswa/' + m.mhs_id : '#/direktori/' + m.mhs_id); });
+    S.boot.g.dosen.forEach((d) => { if ((d.nama + ' ' + (d.bidang || '')).toLowerCase().indexOf(q) > -1) add('Dosen', 'user-round', d.nama, d.bidang || 'Dosen pengampu', '#/direktori/' + d.dosen_id); });
     S.boot.g.penugasan.forEach((t) => { if (String(t.tema).toLowerCase().indexOf(q) > -1) { const p = D.ptmOf(t); add('Tema Presentasi', 'presentation', t.tema, (D.mkOfPtm(p).nama || '') + ' · Pertemuan ' + p.nomor, '#/mk/' + p.mk_id); } });
     S.boot.g.pengumuman.forEach((p) => { if ((p.judul + ' ' + p.isi).toLowerCase().indexOf(q) > -1) add('Pengumuman', 'megaphone', p.judul, fmtRel(p.tanggal), '#/pengumuman'); });
     return res.slice(0, 24);
@@ -636,6 +641,164 @@
     return m;
   }
 
+
+  // ================================================================== v1.2 — FOTO PROFIL & POPUP PROFIL
+  /** Foto disimpan terpisah dari data boot (tidak memperberat buka aplikasi): peta id → data URL, di-cache per perangkat. */
+  const Foto = {
+    ver: '', map: {}, loading: null,
+    init() { const c = Store.get('fotoMap', null); if (c && c.map) { this.ver = c.ver || ''; this.map = c.map; } },
+    of(id) { return id ? this.map[id] || '' : ''; },
+    simpan() { Store.set('fotoMap', { ver: this.ver, map: this.map }); },
+    set(id, foto, ver) { if (foto) this.map[id] = foto; else delete this.map[id]; if (ver) this.ver = ver; this.simpan(); },
+    sync(force) {
+      const v = S.boot && S.boot.g && S.boot.g.settings && S.boot.g.settings.FOTO_VER;
+      if (!v || this.loading || (!force && v === this.ver)) return this.loading || Promise.resolve(false);
+      this.loading = api('foto.list').then((r) => {
+        this.loading = null;
+        if (!r.success || !r.data) return false;
+        this.ver = r.data.ver || v; this.map = r.data.map || {}; this.simpan();
+        if (S.boot) { renderShell(); rerender(); }
+        return true;
+      });
+      return this.loading;
+    }
+  };
+  Foto.init();
+  function mhsOfUser(u) { return u && u.email && S.idx ? S.idx.mhsEmail[String(u.email).toLowerCase()] || null : null; }
+  function avProf(kind, id, nama, cls, foto, klik) {
+    const a = avatar(nama, cls, foto);
+    return klik === false || !id ? a : '<span class="av-link" data-prof="' + kind + ':' + esc(id) + '" role="button" tabindex="0" title="Lihat profil ' + esc(nama || '') + '">' + a + '</span>';
+  }
+  const avMhs = (m, cls, klik) => avProf('mhs', m && m.mhs_id, m && m.nama_lengkap, cls, Foto.of(m && m.mhs_id), klik);
+  const avDsn = (d, cls, klik) => avProf('dsn', d && d.dosen_id, d && d.nama, cls, Foto.of(d && d.dosen_id), klik);
+  function avUsr(u, cls, klik) {
+    const m = mhsOfUser(u);
+    if (m) return avProf('mhs', m.mhs_id, (u && u.nama_lengkap) || m.nama_lengkap, cls, Foto.of(m.mhs_id), klik);
+    return avProf('usr', u && u.user_id, u && u.nama_lengkap, cls, Foto.of(u && u.user_id), klik);
+  }
+  /** Nama yang bisa diklik → popup profil. */
+  function profLink(kind, id, nama) { return id ? '<a href="#" class="prof-link" data-prof="' + kind + ':' + esc(id) + '">' + esc(nama || '-') + '</a>' : esc(nama || '-'); }
+  function fotoSaya() { return Foto.of(S.me && S.me.mhs_id) || Foto.of(S.me && S.me.user_id) || S.foto; }
+  function waLink(hp, pesan) { const s = hp08(hp); return s && s.length > 8 ? 'https://wa.me/62' + s.slice(1) + (pesan ? '?text=' + encodeURIComponent(pesan) : '') : ''; }
+  function kontakHtml(hp, email, nama) {
+    const sapa = 'Halo ' + String(nama || '').split(/[\s,]+/)[0] + ', ';
+    const wa = waLink(hp, sapa);
+    return '<div class="prof-cta">' +
+      (wa ? '<a class="btn wa" href="' + esc(wa) + '" target="_blank" rel="noopener" data-kontak="wa">' + ic('message-circle') + 'WhatsApp</a>' : '<span class="btn ghost off" title="Nomor WhatsApp belum diisi">' + ic('message-circle') + 'WhatsApp belum ada</span>') +
+      (email ? '<a class="btn ghost" href="mailto:' + esc(email) + '" data-kontak="email">' + ic('mail') + 'Email</a>' : '<span class="btn ghost off">' + ic('mail') + 'Email belum ada</span>') + '</div>';
+  }
+  function infoRow(icn, lbl, val) { return val ? '<div class="prof-row">' + ic(icn) + '<span class="muted">' + esc(lbl) + '</span><b>' + val + '</b></div>' : ''; }
+  function profHead(foto, nama, chips, sub, ubahFoto) {
+    return '<div class="prof-head"><div class="prof-ph">' + (foto ? '<img src="' + esc(foto) + '" alt="">' : '<span class="ini">' + esc(initials(nama)) + '</span>') +
+      (ubahFoto ? '<button class="prof-cam" data-foto title="Ganti foto">' + ic('camera') + '</button>' : '') + '</div>' +
+      '<div style="min-width:0"><h2>' + esc(nama || '-') + '</h2>' + (sub ? '<div class="small muted mt8">' + sub + '</div>' : '') + '<div class="row wrap gap6 mt8">' + chips + '</div></div></div>';
+  }
+  function bindFotoBtn(md, pemilikId, nama, reopen) {
+    const b = $('[data-foto]', md.el); if (!b) return;
+    b.onclick = () => pilihFoto(pemilikId, nama, () => { md.close(); reopen(); });
+  }
+  function profilMhs(id) {
+    const m = S.idx.mhs[id]; if (!m) return toast('Data mahasiswa tidak ditemukan.', 'error');
+    const tg = S.boot.g.penugasan.filter((t) => (t.petugas_ids || []).indexOf(id) > -1);
+    const u = (S.boot.g.users || []).find((x) => String(x.email).toLowerCase() === String(m.email || '').toLowerCase());
+    const self = S.me.mhs_id === id, ubah = self || D.isAdmin();
+    const chips = chipJenis(m.jenis_mahasiswa) + (u ? '<span class="chip blue">' + esc(ROLE_LABEL[u.role] || 'Anggota Kelas') + '</span>' : '') + (m.status && m.status !== 'Aktif' ? '<span class="chip red">' + esc(m.status) + '</span>' : '');
+    const md = modal({ title: 'Profil Mahasiswa', icon: 'user-round', cls: 'prof-modal',
+      body: profHead(Foto.of(id), m.nama_lengkap, chips, m.nim ? 'NIM ' + esc(m.nim) : '', ubah) + kontakHtml(m.no_hp, m.email, m.nama_lengkap) +
+        '<div class="prof-grid">' + infoRow('graduation-cap', 'Angkatan', esc(m.angkatan || '')) + infoRow('book-open', 'Konsentrasi', esc(m.konsentrasi || '')) + infoRow('landmark', 'Instansi', esc(m.instansi || '')) +
+        infoRow('mail', 'Email', esc(m.email || '')) + infoRow('phone', 'WhatsApp', esc(m.no_hp || '')) + infoRow('target', 'Target lulus', esc(m.target_lulus_semester || '')) + '</div>' +
+        (tg.length ? '<div class="sec-t">TUGAS PRESENTASI (' + tg.length + ')</div>' + tg.slice(0, 6).map((t) => { const p = D.ptmOf(t), mk = D.mkOfPtm(p); return '<div class="tile row between small mb8"><span class="ellipsis"><b class="semi">' + esc(mk.kode || '') + ' · Sesi ' + esc(p.nomor || '-') + '</b> — ' + esc(t.tema || '') + '</span>' + statusChip(D.statusTugas(t)) + '</div>'; }).join('') : ''),
+      foot: (D.isAdmin() ? '<a class="btn ghost" href="#/mahasiswa/' + esc(id) + '" data-close>' + ic('id-card') + 'Detail lengkap</a>' : '') + '<button class="btn" data-close>Tutup</button>' });
+    bindFotoBtn(md, id, m.nama_lengkap, () => profilMhs(id));
+    return md;
+  }
+  function profilDosen(id) {
+    const d = S.idx.dosen[id]; if (!d) return toast('Data dosen tidak ditemukan.', 'error');
+    const mks = S.boot.g.mk.filter((m) => m.dosen_id === id && m.status_aktif !== 'TIDAK');
+    const md = modal({ title: 'Profil Dosen', icon: 'user-round', cls: 'prof-modal',
+      body: profHead(Foto.of(id), d.nama, '<span class="chip violet">Dosen Pengampu</span>' + (d.status === 'Nonaktif' ? '<span class="chip red">Nonaktif</span>' : ''), esc(d.bidang || ''), D.isAdmin()) + kontakHtml(d.no_hp, d.email, d.nama) +
+        '<div class="prof-grid">' + infoRow('book-open', 'Bidang', esc(d.bidang || '')) + infoRow('mail', 'Email', esc(d.email || '')) + infoRow('phone', 'WhatsApp', esc(d.no_hp || '')) + '</div>' +
+        (mks.length ? '<div class="sec-t">MATA KULIAH DIAMPU (' + mks.length + ')</div>' + mks.map((m) => '<a class="tile row between small mb8" href="#/mk/' + esc(m.mk_id) + '" data-close style="color:inherit"><span class="ellipsis"><span class="chip blue">' + esc(m.kode) + '</span> <b class="semi">' + esc(m.nama) + '</b></span><span class="muted nowrap">' + esc((S.idx.jadwalByMk[m.mk_id] || []).map((j) => j.hari + ' ' + j.jam_mulai).join(', ')) + '</span></a>').join('') : ''),
+      foot: '<button class="btn" data-close>Tutup</button>' });
+    bindFotoBtn(md, id, d.nama, () => profilDosen(id));
+    return md;
+  }
+  function profilUser(id) {
+    const u = S.idx.user[id] || (S.boot.g.users || []).find((x) => x.user_id === id); if (!u) return toast('Data pengguna tidak ditemukan.', 'error');
+    const m = mhsOfUser(u); if (m) return profilMhs(m.mhs_id);
+    const self = S.me.user_id === id;
+    const md = modal({ title: 'Profil Pengguna', icon: 'user-round', cls: 'prof-modal',
+      body: profHead(Foto.of(id) || (self ? S.foto : ''), u.nama_lengkap, '<span class="chip blue">' + esc(ROLE_LABEL[u.role] || '') + '</span>', '', self || D.isOp()) + kontakHtml(u.no_hp, u.email, u.nama_lengkap) +
+        '<div class="prof-grid">' + infoRow('mail', 'Email', esc(u.email || '')) + infoRow('phone', 'WhatsApp', esc(u.no_hp || '')) + '</div>',
+      foot: '<button class="btn" data-close>Tutup</button>' });
+    bindFotoBtn(md, id, u.nama_lengkap, () => profilUser(id));
+    return md;
+  }
+  function bukaProfil(ref) {
+    const i = String(ref || '').indexOf(':'), kind = ref.slice(0, i), id = ref.slice(i + 1);
+    if (!S.boot || !id) return;
+    if (kind === 'mhs') profilMhs(id); else if (kind === 'dsn') profilDosen(id); else profilUser(id);
+  }
+  /**
+   * Kecilkan gambar di browser sebelum dikirim (hemat kuota & cepat).
+   * o = { max: sisi terpanjang px, square: crop persegi tengah, q: kualitas awal, maxChars: batas panjang data URL }
+   */
+  function kecilkanGambar(file, o) {
+    o = o || {};
+    return new Promise((res, rej) => {
+      if (!file || !/^image\/(jpeg|png|webp|gif|bmp)/.test(file.type)) return rej(new Error('Pilih berkas gambar (JPG/PNG/WebP).'));
+      const img = new Image(), url = URL.createObjectURL(file);
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        let sw = img.width, sh = img.height, sx = 0, sy = 0;
+        if (o.square) { const s = Math.min(sw, sh); sx = (sw - s) / 2; sy = (sh - s) / 2; sw = sh = s; }
+        let scale = Math.min(1, (o.max || 1600) / Math.max(sw, sh)), q = o.q || 0.82, out = '';
+        for (let i = 0; i < 9; i++) {
+          const c = document.createElement('canvas'); c.width = Math.max(1, Math.round(sw * scale)); c.height = Math.max(1, Math.round(sh * scale));
+          const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); g.drawImage(img, sx, sy, sw, sh, 0, 0, c.width, c.height);
+          out = c.toDataURL('image/jpeg', q);
+          if (!o.maxChars || out.length <= o.maxChars) break;
+          if (q > 0.55) q -= 0.1; else scale *= 0.82;
+        }
+        if (o.maxChars && out.length > o.maxChars) return rej(new Error('Gambar terlalu besar, coba gambar lain.'));
+        res({ dataUrl: out, mime: 'image/jpeg', base64: out.split(',')[1] });
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); rej(new Error('Gambar tidak dapat dibaca.')); };
+      img.src = url;
+    });
+  }
+  /** Pilih & unggah foto profil (sendiri; admin untuk mahasiswa/dosen). */
+  function pilihFoto(pemilikId, nama, done) {
+    const ada = Foto.of(pemilikId);
+    const md = modal({ title: 'Foto Profil', sub: esc(nama || ''), icon: 'camera', size: 'sm',
+      body: '<div class="foto-pick"><div class="prof-ph big" id="fpPrev">' + (ada ? '<img src="' + esc(ada) + '" alt="">' : '<span class="ini">' + esc(initials(nama)) + '</span>') + '</div>' +
+        '<label class="btn ghost">' + ic('upload') + 'Pilih Foto<input type="file" accept="image/*" hidden data-fp></label><span class="small muted" style="text-align:center">Foto otomatis dipotong persegi & dikecilkan. Tampil sebagai thumbnail di seluruh aplikasi.</span></div>',
+      foot: (ada ? '<button class="btn danger" data-hapus>' + ic('trash-2') + 'Hapus Foto</button><span class="grow"></span>' : '') + '<button class="btn ghost" data-close>Batal</button><button class="btn" data-ok disabled>' + ic('check') + 'Simpan Foto</button>' });
+    let hasil = null;
+    $('[data-fp]', md.el).onchange = async (e) => {
+      try { hasil = await kecilkanGambar(e.target.files[0], { max: 192, square: true, q: 0.8, maxChars: 40000 }); $('#fpPrev', md.el).innerHTML = '<img src="' + hasil.dataUrl + '" alt="">'; $('[data-ok]', md.el).disabled = false; }
+      catch (er) { toast(er.message, 'error'); }
+    };
+    const kirim = async (foto, btn) => {
+      busy(btn, true, 'Menyimpan…');
+      const r = await api('foto.save', { pemilik_id: pemilikId, foto });
+      busy(btn, false);
+      if (!r.success) return toast(r.message, 'error');
+      Foto.set(r.data.pemilik_id, foto, r.data.ver); if (S.boot && S.boot.g.settings) S.boot.g.settings.FOTO_VER = r.data.ver;
+      md.close(); toast(r.message); renderShell(); rerender(); if (done) done();
+    };
+    $('[data-ok]', md.el).onclick = (e) => hasil && kirim(hasil.dataUrl, e.target.closest('button'));
+    const h = $('[data-hapus]', md.el); if (h) h.onclick = (e) => kirim('', e.target.closest('button'));
+    return md;
+  }
+
+  // ================================================================== v1.2 — APLIKASI LAIN
+  function appLinks() { return (S.boot && S.boot.g.settings && Array.isArray(S.boot.g.settings.APP_LINKS)) ? S.boot.g.settings.APP_LINKS.filter((l) => l && l.aktif !== false && l.url) : []; }
+  const APP_WARNA = ['#5B74DB', '#10B981', '#F59E0B', '#8B5CF6', '#EC4899', '#0EA5E9', '#14B8A6', '#F97316'];
+  function appTiles(links, cls) {
+    return '<div class="app-tiles ' + (cls || '') + '">' + links.map((l, i) => '<a class="app-tile" href="' + esc(l.url) + '" target="_blank" rel="noopener" title="' + esc(l.url) + '"><span class="ai" style="background:' + APP_WARNA[i % APP_WARNA.length] + '">' + ic(l.ikon || 'globe') + '</span><span class="grow" style="min-width:0"><b class="semi ellipsis" style="display:block">' + esc(l.nama) + '</b>' + (l.ket ? '<span class="small muted ellipsis" style="display:block">' + esc(l.ket) + '</span>' : '') + '</span>' + ic('arrow-up-right', 'ext') + '</a>').join('') + '</div>';
+  }
+
   // ------------------------------------------------------------------ grafik ringan (SVG)
   function donut(p, o) {
     o = o || {}; const size = o.size || 96, sw = o.stroke || 10, r = (size - sw) / 2, c = 2 * Math.PI * r;
@@ -751,31 +914,57 @@
     google.accounts.id.renderButton(host, { theme: 'outline', size: 'large', shape: 'pill', text: 'signin_with', logo_alignment: 'center', width: Math.min(400, host.clientWidth || 360), locale: 'id' });
   }
   function featHtml(icn, t, s) { return '<div class="feat"><span class="fi">' + ic(icn) + '</span><div><b>' + esc(t) + '</b><span>' + esc(s) + '</span></div></div>'; }
+  /** v1.2: wallpaper halaman login (diatur Operator) — disimpan di perangkat, diunduh ulang hanya bila diganti. */
+  const Wall = {
+    get() { const c = Store.get('wallpaper', null); return c && c.img ? c : null; },
+    async sync(br) {
+      if (!br || !br.bg) return null;
+      if (!br.bg.ada) { Store.del('wallpaper'); return null; }
+      const c = this.get(); if (c && c.ver === br.bg.ver) return c.img;
+      try {
+        const r = await fetch(CFG.GAS_URL + '?action=wallpaper&t=' + Date.now(), { cache: 'no-store', redirect: 'follow' });
+        const j = await r.json(); if (j.success && j.data && j.data.img) { Store.set('wallpaper', { ver: j.data.ver, img: j.data.img }); return j.data.img; }
+      } catch (e) {}
+      return null;
+    },
+    apply(img, op) {
+      const el = $('#lgBg'); if (!el) return;
+      if (img) { el.style.backgroundImage = 'url("' + img + '")'; el.classList.add('on'); } else { el.style.backgroundImage = ''; el.classList.remove('on'); }
+      el.style.opacity = img ? Math.max(0, Math.min(100, op == null ? 35 : op)) / 100 : 0;
+    }
+  };
   function showGuest(state) {
     $('#splash').hidden = true; $('#shell').hidden = true;
     const g = $('#guest'); g.hidden = false;
-    const br = S.branding || {};
+    const br = S.branding || {}, bg = br.bg || {}, w = bg.ada ? Wall.get() : null;
     const logo = br.logo ? '<img src="' + br.logo + '" alt="Logo">' : ic('graduation-cap');
-    g.innerHTML = '<div class="login-wrap"><div class="login-top"><span class="ok">● Sistem Operasional</span><span>' + esc((br.semester ? 'Perkuliahan ' + br.semester : 'Portal perkuliahan') + (br.angkatan ? ' · ' + br.angkatan : '') + ' (P2K & Reguler)') + '</span></div>' +
-      '<div class="login-card"><div class="login-hero"><div class="lg"><span class="logo">' + logo + '</span><div><div style="font-size:30px;font-weight:700;letter-spacing:-.02em">' + esc(br.nama || 'SIM KULIAH') + '</div><div style="opacity:.85">' + esc(br.institusi || 'Program Pascasarjana') + '</div></div></div>' +
-      '<span class="chip" style="background:rgba(255,255,255,.15);color:#fff;align-self:flex-start">● Terintegrasi Google Workspace</span>' +
+    const info = (br.semester ? 'Perkuliahan ' + br.semester : 'Portal perkuliahan') + (br.angkatan ? ' · ' + br.angkatan : '');
+    g.innerHTML = '<div class="lg2"><div class="lg2-bg" id="lgBg"></div><div class="lg2-shade"></div>' +
+      '<header class="lg2-top"><div class="lg2-brand"><span class="logo">' + logo + '</span><div><b>' + esc(br.nama || 'SIM KULIAH') + '</b><span>' + esc(br.institusi || 'Program Pascasarjana') + '</span></div></div>' +
+      '<span class="lg2-status"><i></i>Sistem Operasional</span></header>' +
+      '<main class="lg2-main"><section class="lg2-hero"><span class="lg2-pill">' + ic('graduation-cap') + esc(info) + '</span>' +
       '<h2>Portal Akademik &amp; Manajemen Tugas Terpadu</h2><p>Kelola 16 pertemuan, presentasi kelompok, modul belajar, dan pemantauan kelulusan tepat waktu dalam satu tempat.</p>' +
-      '<div class="col feats" style="gap:12px">' + featHtml('book-open', '16 Pertemuan Terstruktur Otomatis', 'Makalah, slide, notulen & referensi tersimpan rapi di Google Drive.') +
-      featHtml('bell', 'Pengingat H-7, H-3, H-1', 'Notifikasi petugas presentasi via WhatsApp & Email.') + featHtml('target', 'Monitoring Target Kelulusan', 'Pantau progres mahasiswa P2K & Reguler secara real-time.') + '</div></div>' +
-      '<div class="login-form" id="loginForm"></div></div></div>';
+      '<div class="lg2-feats">' + featHtml('book-open', '16 Pertemuan Terstruktur', 'Makalah, slide, notulen & referensi rapi di Google Drive.') +
+      featHtml('bell', 'Pengingat H-7, H-3, H-1', 'Notifikasi petugas presentasi via WhatsApp & Email.') + featHtml('target', 'Monitoring Kelulusan', 'Pantau progres mahasiswa P2K & Reguler real-time.') + '</div></section>' +
+      '<section class="lg2-card"><div class="login-form" id="loginForm"></div></section></main>' +
+      '<footer class="lg2-foot">© ' + new Date().getFullYear() + ' ' + esc(br.institusi || br.nama || 'SIM KULIAH') + ' · Terintegrasi Google Workspace</footer></div>';
+    Wall.apply(w && w.img, bg.opacity);
+    if (bg.ada && (!w || w.ver !== bg.ver)) Wall.sync(br).then((img) => { if (img && $('#lgBg')) Wall.apply(img, bg.opacity); });
     renderLoginForm(state);
   }
   function renderLoginForm(state) {
     const f = $('#loginForm'); if (!f) return;
     state = state || {};
+    const br = S.branding || {};
     let extra = '';
     if (state.code === 'PENDING') extra = '<div class="state-card" style="background:#FFFBEB;box-shadow:inset 0 0 0 1px #F7E2A8">' + ic('clock') + '<div><b>Menunggu Verifikasi</b><div class="small muted mt8">Pendaftaran <b>' + esc(state.email || '') + '</b> sudah kami terima dan sedang ditinjau Operator/Ketua Kelas. Anda akan mendapat pemberitahuan setelah disetujui.</div></div></div>';
     else if (state.code === 'REJECTED') extra = '<div class="alert err">' + ic('ban') + '<span>' + esc(state.message) + '</span></div>';
     else if (state.message) extra = '<div class="alert err">' + ic('triangle-alert') + '<span>' + esc(state.message) + '</span></div>';
-    f.innerHTML = '<span class="chip blue" style="align-self:flex-start">AKSES TERPROTEKSI</span><div><h1>Selamat Datang di Portal Kelas</h1><p class="muted" style="font-size:15px;margin:8px 0 0">Masuk dengan akun Google terdaftar untuk mengakses jadwal, materi, dan penugasan perkuliahan.</p></div>' +
+    f.innerHTML = '<div class="lg2-logo">' + (br.logo ? '<img src="' + br.logo + '" alt="">' : ic('graduation-cap')) + '</div>' +
+      '<div style="text-align:center"><span class="chip blue">' + ic('shield-check') + 'AKSES TERPROTEKSI</span><h1>Selamat Datang di Portal Kelas</h1><p class="muted lg2-sub">Masuk dengan akun Google terdaftar untuk mengakses jadwal, materi, dan penugasan perkuliahan.</p></div>' +
       '<div id="gbtn" class="gbtn-wrap"><div class="skel" style="height:44px;width:100%;max-width:400px"></div></div>' +
       '<div class="small faint" style="text-align:center">' + ic('info') + ' Gunakan email Gmail / Google Workspace yang telah didaftarkan</div>' + extra +
-      '<div class="alert warn" style="margin-top:6px">' + ic('user-plus') + '<div><b>Mahasiswa baru, belum terdaftar?</b><div class="mt8">Klik <b>Masuk dengan Google</b> — bila email belum terdaftar, formulir pendaftaran singkat (Nama, Email, No HP) akan muncul otomatis dan menunggu verifikasi Operator.</div></div></div>' +
+      '<div class="lg2-reg">' + ic('user-plus') + '<div><b>Mahasiswa baru, belum terdaftar?</b><div class="small mt8">Klik <b>Masuk dengan Google</b> — bila email belum terdaftar, formulir pendaftaran singkat (Nama, Email, No HP) muncul otomatis dan menunggu verifikasi Operator.</div></div></div>' +
       '<div id="loginBusy" hidden class="row" style="justify-content:center"><span class="spin" style="width:18px;height:18px;border:2px solid var(--primary);border-right-color:transparent;border-radius:50%;animation:spin .7s linear infinite"></span><span class="muted">Memverifikasi akun…</span></div>';
     initGsi();
   }
@@ -861,12 +1050,29 @@
     renderShell();
     if (!location.hash || location.hash === '#' || location.hash === '#/') location.replace('#/dashboard'); else route();
     setTimeout(showAnnouncementPopups, 600);
+    idle(() => Foto.sync(), 1200);                                         // v1.2: foto profil dimuat terpisah, saat senggang
     if (D.isAdmin()) idle(() => ensureAdmin().then(() => idle(prefetchAdmin, 1500)).catch(() => {}), 2000);
   }
 
   // ------------------------------------------------------------------ event global (delegasi)
+  // v1.2: foto/nama anggota & dosen → popup profil (fase capture: tidak memicu klik baris/kartu di bawahnya)
+  document.addEventListener('click', (e) => {
+    const p = e.target.closest('[data-prof]');
+    if (!p || !S.boot) return;
+    e.preventDefault(); e.stopPropagation();
+    closeDropdowns(); bukaProfil(p.dataset.prof);
+  }, true);
+  document.addEventListener('keydown', (e) => { if ((e.key === 'Enter' || e.key === ' ') && e.target.matches && e.target.matches('.av-link[data-prof]')) { e.preventDefault(); bukaProfil(e.target.dataset.prof); } });
   document.addEventListener('click', (e) => {
     const t = e.target;
+    if (t.closest('[data-apps]')) {
+      const links = appLinks(), btn = t.closest('[data-apps]');
+      const d = openDropdown(btn, '<div class="row between" style="padding:8px 10px"><b>Aplikasi Lain</b><span class="small muted">' + links.length + ' aplikasi</span></div>' +
+        (links.length ? appTiles(links, 'dd') : '<div class="empty">' + ic('layout-grid') + '<br>Belum ada tautan aplikasi.</div>') +
+        (D.isOp() ? '<a href="#/settings/apps" class="small" style="display:block;text-align:center;padding:8px">' + ic('settings') + ' Atur tautan aplikasi</a>' : ''), 'apps-dd');
+      d.addEventListener('click', (ev) => { if (ev.target.closest('a')) setTimeout(() => d.remove(), 50); });
+      return;
+    }
     if (t.closest('[data-burger]')) { document.body.classList.toggle('nav-open'); return; }
     if (t.closest('#overlay')) { document.body.classList.remove('nav-open'); return; }
     if (t.closest('[data-logout]')) { e.preventDefault(); confirmDlg('Keluar dari aplikasi?', 'Anda perlu masuk kembali dengan akun Google.', { ok: 'Keluar' }).then((y) => y && logout()); return; }
@@ -921,7 +1127,8 @@
     readFile, downloadFile, openViewer, saveBlob, b64ToBlob, donut, bars, progress, table, exportXlsx, exportPdf, parseSheetFile, normKey, loadScript,
     fmtTgl, fmtWaktu, fmtRel, fmtSize, initials, avatar, chipJenis, statusChip, pct, ymd, todayYmd, addDays, dayDiff, hp08, hpValid, emailValid, fileKind,
     ROLE_LABEL, HARI, BULAN, markRead, ensureAdmin, logout, userKey, annForMe, onGoogleCredential,
-    APP_VER, saveLocal, tmpId, pend, warmUp, prefetchAdmin, scheduleDrain
+    APP_VER, saveLocal, tmpId, pend, warmUp, prefetchAdmin, scheduleDrain,
+    Foto, avMhs, avDsn, avUsr, profLink, bukaProfil, profilMhs, profilDosen, pilihFoto, kecilkanGambar, appLinks, appTiles, waLink, kontakHtml, fotoSaya, Wall
   };
   window.Perf = Perf;
   document.addEventListener('DOMContentLoaded', () => setTimeout(start, 0));
